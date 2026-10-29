@@ -260,13 +260,14 @@ fn parse_request_status_line (line : String) -> (Method,String,HashMap<String, S
 }
 
 fn parse_raw_path(raw_path: &str) -> (&str, HashMap<String, String>) {
-    let mut real_path = raw_path;
+    //strip query first, then normalize the path itself ("/" must survive trailing-slash removal)
+    let path_part = raw_path.split('?').next().unwrap();
+    let real_path = match clear_path_end_slash(path_part) {
+        "" => "/",
+        p => p,
+    };
     let mut query_params = HashMap::new();
-    if raw_path.contains('?') {
-        let split_raw_path = raw_path.split('?');
-        let vec_path = split_raw_path.collect::<Vec<&str>>();
-        real_path = clear_path_end_slash(vec_path[0]);
-        let raw_query_params = vec_path[1];
+    if let Some(raw_query_params) = raw_path.split('?').nth(1) {
         let split_raw_query_params = raw_query_params.split('&');
         for part in split_raw_query_params {
             let mut split_part = part.split('=');
@@ -360,6 +361,20 @@ fn parse_form_url_encoded(body : &[u8]) -> HashMap<String,String> {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn root_path_with_query_is_not_emptied() {
+        // regression: "/?lang=zh" used to lose the root "/" and 404
+        let (path, query) = parse_raw_path("/?lang=zh");
+        assert_eq!(path, "/");
+        assert_eq!(query.get("lang").map(|s| s.as_str()), Some("zh"));
+        let (path, _) = parse_raw_path("/index.html?lang=zh");
+        assert_eq!(path, "/index.html");
+        let (path, _) = parse_raw_path("/backend/empty/");
+        assert_eq!(path, "/backend/empty");
+        let (path, _) = parse_raw_path("/locales/zh.json?v=1");
+        assert_eq!(path, "/locales/zh.json");
+    }
 
     // Minimal router stub: every request gets a 200, so the tests exercise body consumption
     // and the Expect handshake in `handle_socket` rather than the real routes.

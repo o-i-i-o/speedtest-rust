@@ -1,0 +1,22 @@
+{
+  "ui.title": "LibreSpeed Example",
+  "ui.privacy": "Privacy",
+  "ui.server": "Server:",
+  "ui.ping": "Ping",
+  "ui.jitter": "Jitter",
+  "ui.download": "Download",
+  "ui.upload": "Upload",
+  "ui.ms": "ms",
+  "ui.mbps": "Mbps",
+  "ui.loading": "Selecting a server...",
+  "ui.noServers": "No servers available",
+  "ui.start": "Start",
+  "ui.abort": "Abort",
+  "ui.share": "Share results",
+  "ui.testId": "Test ID:",
+  "ui.linkCopied": "Link copied",
+  "ui.source": "Source code",
+  "ui.close": "Close",
+  "fail": "Fail",
+  "policy.body": "<h2>Privacy Policy</h2>\n    <p>This HTML5 Speedtest server is configured with telemetry enabled.</p>\n    <h4>What data we collect</h4>\n    <p>\n        At the end of the test, the following data is collected and stored:\n        <ul>\n            <li>Test ID</li>\n            <li>Time of testing</li>\n            <li>Test results (download and upload speed, ping and jitter)</li>\n            <li>IP address</li>\n            <li>ISP information</li>\n            <li>Approximate location (inferred from IP address, not GPS)</li>\n            <li>User agent and browser locale</li>\n            <li>Test log (contains no personal information)</li>\n        </ul>\n    </p>\n    <h4>How we use the data</h4>\n    <p>\n        Data collected through this service is used to:\n        <ul>\n            <li>Allow sharing of test results (sharable image for forums, etc.)</li>\n            <li>To improve the service offered to you (for instance, to detect problems on our side)</li>\n        </ul>\n        No personal information is disclosed to third parties.\n    </p>\n    <h4>Your consent</h4>\n    <p>\n        By starting the test, you consent to the terms of this privacy policy.\n    </p>\n    <h4>Data removal</h4>\n    <p>\n        If you want to have your information deleted, you need to provide either the ID of the test or your IP address. This is the only way to identify your data, without this information we won't be able to comply with your request.<br/><br/>\n        Contact this email address for all deletion requests: <a href=\"mailto:PUT@YOUR_EMAIL.HERE\">TO BE FILLED BY DEVELOPER</a>.\n    </p>\n    <br/><br/>"
+}

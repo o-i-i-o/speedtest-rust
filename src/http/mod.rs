@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use tokio::net::TcpStream;
 use std::fs::File;
 use std::io::Read;
+use std::path::Path;
 use crate::config::{DEF_ASSETS, SERVER_CONFIG};
 
 pub mod http_server;
@@ -38,7 +39,31 @@ pub async fn find_remote_ip_addr (conn: &mut TcpStream) -> String {
     client_addr.ip().to_string().replace("::ffff:","")
 }
 
+///request-supplied asset paths must not escape the assets directory.
+///`..` components are rejected, NUL guards against truncation tricks and backslash matters on
+///Windows builds where `..\` is an accepted separator; the URL is never percent-decoded here.
+fn is_safe_asset_path(file_name : &str) -> bool {
+    !file_name.contains('\0')
+        && !file_name.contains('\\')
+        && !file_name.split('/').any(|component| component == "..")
+}
+
 pub fn get_index_file_content(file_name : &str) -> Option<Vec<u8>> {
+    if !is_safe_asset_path(file_name) {
+        return None;
+    }
+    //normalize once here: empty path (root with query string) and missing leading slash
+    let file_name = if file_name.is_empty() || file_name == "/" {
+        "/index.html"
+    } else {
+        file_name
+    };
+    let file_name = if file_name.starts_with('/') {
+        std::borrow::Cow::Borrowed(file_name)
+    } else {
+        std::borrow::Cow::Owned(format!("/{}", file_name))
+    };
+    let file_name = file_name.as_ref();
     if SERVER_CONFIG.get()?.assets_path.is_empty() {
         if file_name.contains("servers_list.js") {
             Some(generate_server_endpoint())
@@ -48,8 +73,15 @@ pub fn get_index_file_content(file_name : &str) -> Option<Vec<u8>> {
             Some(Vec::from(file.contents()))
         }
     } else {
+        let assets_dir = Path::new(SERVER_CONFIG.get()?.assets_path.as_str());
         let file_path = format!("{}{}",SERVER_CONFIG.get()?.assets_path,file_name);
-        if let Ok(mut file) = File::open(file_path) {
+        //canonicalizing resolves symlinks too, so a link out of the assets dir is rejected as well
+        let assets_dir = assets_dir.canonicalize().ok()?;
+        let real_file = Path::new(&file_path).canonicalize().ok()?;
+        if !real_file.starts_with(&assets_dir) {
+            return None;
+        }
+        if let Ok(mut file) = File::open(real_file) {
             let mut file_bytes = Vec::new();
             if file.read_to_end(&mut file_bytes).is_ok() {
                 Some(file_bytes)

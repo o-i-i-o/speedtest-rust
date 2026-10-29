@@ -7,6 +7,102 @@
 <script type="text/javascript" src="speedtest.js"></script>
 <script type="text/javascript" src="servers_list.js"></script>
 <script type="text/javascript">
+//I18N: inline en fallback dictionary (keep in sync with locales/en.json; policy.body stays in the DOM for en)
+const LOCALE_EN = {
+	"ui.title":"LibreSpeed Example","ui.privacy":"Privacy","ui.server":"Server:",
+	"ui.ping":"Ping","ui.jitter":"Jitter","ui.download":"Download","ui.upload":"Upload",
+	"ui.ms":"ms","ui.mbps":"Mbps","ui.loading":"Selecting a server...","ui.noServers":"No servers available",
+	"ui.start":"Start","ui.abort":"Abort","ui.share":"Share results","ui.testId":"Test ID:",
+	"ui.linkCopied":"Link copied","ui.source":"Source code","ui.close":"Close","fail":"Fail"
+};
+let I18N_DICT = LOCALE_EN;
+//translation lookup with en fallback; usable from inline handlers (classic scripts share the global lexical scope)
+function t(k){ const v = I18N_DICT[k]; return v !== undefined ? v : (LOCALE_EN[k] !== undefined ? LOCALE_EN[k] : null); }
+//worker sends the literal "Fail" sentinel; it must be caught before format() coerces it through Number()
+function fmtVal(v){ return v === "Fail" ? t("fail") : format(v); }
+//status line is written imperatively, so remember which key it currently shows for late re-localization
+let msgKey = "ui.loading";
+function setMessage(k){
+	msgKey = k;
+	const el = I("messageText");
+	if (el) el.textContent = t(k);
+	const spinner = I("loadingSpinner");
+	if (spinner) spinner.style.display = k === "ui.loading" ? "" : "none";
+}
+//original markup of [data-i18n-html] blocks, captured before the first overwrite: serves as the en baseline
+const ORIG_HTML = new Map();
+function applyDict(dict){
+	document.querySelectorAll("[data-i18n]").forEach(el => {
+		const tr = dict[el.dataset.i18n];
+		if (tr !== undefined) el.textContent = tr;
+	});
+	document.querySelectorAll("[data-i18n-html]").forEach(el => {
+		const k = el.dataset.i18nHtml;
+		if (!ORIG_HTML.has(k)) ORIG_HTML.set(k, el.innerHTML);
+		//en keeps the markup shipped in the DOM, other locales must provide the key
+		const tr = dict[k] !== undefined ? dict[k] : ORIG_HTML.get(k);
+		el.innerHTML = tr;
+	});
+	//the status line is not bound to a fixed key, refresh it from the key it currently holds
+	const msg = I("messageText");
+	if (msg && dict[msgKey] !== undefined) msg.textContent = dict[msgKey];
+	//feed CSS custom properties consumed by #startStopBtn:before / .running:before content
+	for (const [key, cssVar] of [["ui.start", "--t-start"], ["ui.abort", "--t-abort"]]){
+		const v = dict[key] !== undefined ? dict[key] : LOCALE_EN[key];
+		if (v !== undefined) document.documentElement.style.setProperty(cssVar, JSON.stringify(v));
+	}
+}
+function localizeLang(dict, meta){
+	I18N_DICT = dict;
+	document.documentElement.lang = meta.code;
+	document.documentElement.dir = meta.dir || "ltr"; //RTL locales only need "dir" in manifest.json
+	applyDict(dict);
+}
+function detectLangs(){
+	const out = [];
+	try{
+		const q = new URLSearchParams(window.location.search).get("lang");
+		if (q) out.push(q);
+	}catch(e){}
+	try{
+		const s = localStorage.getItem("lang");
+		if (s) out.push(s);
+	}catch(e){}
+	const nav = navigator.languages || [navigator.language];
+	for (const l of nav) if (l) out.push(l);
+	return out;
+}
+function pickLocale(codes, locales){
+	const norm = c => String(c).toLowerCase().replace(/_/g, "-");
+	const byNorm = {};
+	for (const l of locales) byNorm[norm(l.code)] = l;
+	for (const c of codes){
+		const n = norm(c);
+		if (byNorm[n]) return byNorm[n];
+		const base = n.split("-")[0];
+		if (byNorm[base]) return byNorm[base];
+	}
+	return null;
+}
+async function initI18n(){
+	applyDict(LOCALE_EN); //set CSS vars + defaults before any async swap
+	let manifest = null;
+	try{ manifest = await (await fetch("locales/manifest.json", { cache:"no-cache" })).json(); }catch(e){}
+	if (!manifest || !Array.isArray(manifest.locales)) return; //no locales served -> stay en
+	const loc = pickLocale(detectLangs(), manifest.locales);
+	if (!loc || String(loc.code).toLowerCase() === "en") return;
+	try{
+		//no-cache lets the browser revalidate against the ETag, so edited translations show up on the next visit;
+		//?v= is only a coarse bust for proxies that ignore revalidation
+		const dict = await (await fetch("locales/" + loc.code + ".json?v=" + (manifest.version || "0"), { cache:"no-cache" })).json();
+		localizeLang(Object.assign({}, LOCALE_EN, dict), loc); //missing keys fall back to inline en
+	}catch(e){}
+}
+function onBodyLoad(){
+	initServers();
+	//locales can resolve after initServers already wrote a message, so re-apply once they land
+	initI18n().then(() => applyDict(I18N_DICT));
+}
 function I(i){ return document.getElementById(i); }
 
 let SPEEDTEST_SERVERS = get_servers();
@@ -18,7 +114,7 @@ s.setParameter("telemetry_level","basic"); //enable telemetry
 //SERVER AUTO SELECTION
 function initServers(){
 	const noServersAvailable = function () {
-		I("message").innerHTML = "No servers available";
+		setMessage("ui.noServers");
 	};
 	const runServerSelect = function () {
 		s.selectServer(function (server) {
@@ -147,12 +243,12 @@ function updateUI(forced){
 	if(uiData==null) return;
 	const status = uiData.testState;
 	I("ip").textContent=uiData.clientIp;
-	I("dlText").textContent=(status==1&&uiData.dlStatus==0)?"...":format(uiData.dlStatus);
+	I("dlText").textContent=(status==1&&uiData.dlStatus==0)?"...":fmtVal(uiData.dlStatus);
 	drawMeter(I("dlMeter"),mbpsToAmount(Number(uiData.dlStatus*(status==1?oscillate():1))),meterBk,dlColor,Number(uiData.dlProgress),progColor);
-	I("ulText").textContent=(status==3&&uiData.ulStatus==0)?"...":format(uiData.ulStatus);
+	I("ulText").textContent=(status==3&&uiData.ulStatus==0)?"...":fmtVal(uiData.ulStatus);
 	drawMeter(I("ulMeter"),mbpsToAmount(Number(uiData.ulStatus*(status==3?oscillate():1))),meterBk,ulColor,Number(uiData.ulProgress),progColor);
-	I("pingText").textContent=format(uiData.pingStatus);
-	I("jitText").textContent=format(uiData.jitterStatus);
+	I("pingText").textContent=fmtVal(uiData.pingStatus);
+	I("jitText").textContent=fmtVal(uiData.jitterStatus);
 }
 function oscillate(){
 	return 1+0.02*Math.sin(Date.now()/100);
@@ -230,10 +326,10 @@ function initUI(){
 		color:#FFFFFF;
 	}
 	#startStopBtn:before{
-		content:"Start";
+		content:var(--t-start,"Start");
 	}
 	#startStopBtn.running:before{
-		content:"Abort";
+		content:var(--t-abort,"Abort");
 	}
 	#serverArea{
 		margin-top:1em;
@@ -377,59 +473,59 @@ function initUI(){
 		}
 	}
 </style>
-<title>LibreSpeed Example</title>
+<title data-i18n="ui.title">LibreSpeed Example</title>
 </head>
-<body onload="initServers()">
-<h1>LibreSpeed Example</h1>
+<body onload="onBodyLoad()">
+<h1 data-i18n="ui.title">LibreSpeed Example</h1>
 <div id="loading" class="visible">
-	<p id="message"><span class="loadCircle"></span>Selecting a server...</p>
+	<p id="message"><span id="loadingSpinner" class="loadCircle"></span><span id="messageText" data-i18n="ui.loading">Selecting a server...</span></p>
 </div>
 <div id="testWrapper" class="hidden">
 	<div id="startStopBtn" onclick="startStop()"></div><br/>
-	<a class="privacy" href="#" onclick="I('privacyPolicy').style.display=''">Privacy</a>
+	<a class="privacy" href="#" data-i18n="ui.privacy" onclick="I('privacyPolicy').style.display=''">Privacy</a>
 	<div id="serverArea">
-		Server: <select id="server" onchange="s.setSelectedServer(SPEEDTEST_SERVERS[this.value])"></select>
+		<span data-i18n="ui.server">Server:</span> <select id="server" onchange="s.setSelectedServer(SPEEDTEST_SERVERS[this.value])"></select>
 	</div>
 	<div id="test">
 		<div class="testGroup">
             <div class="testArea2">
-				<div class="testName">Ping</div>
+				<div class="testName" data-i18n="ui.ping">Ping</div>
 				<div id="pingText" class="meterText" style="color:#AA6060"></div>
-				<div class="unit">ms</div>
+				<div class="unit" data-i18n="ui.ms">ms</div>
 			</div>
 			<div class="testArea2">
-				<div class="testName">Jitter</div>
+				<div class="testName" data-i18n="ui.jitter">Jitter</div>
 				<div id="jitText" class="meterText" style="color:#AA6060"></div>
-				<div class="unit">ms</div>
+				<div class="unit" data-i18n="ui.ms">ms</div>
 			</div>
 		</div>
 		<div class="testGroup">
 			<div class="testArea">
-				<div class="testName">Download</div>
+				<div class="testName" data-i18n="ui.download">Download</div>
 				<canvas id="dlMeter" class="meter"></canvas>
 				<div id="dlText" class="meterText"></div>
-				<div class="unit">Mbps</div>
+				<div class="unit" data-i18n="ui.mbps">Mbps</div>
 			</div>
 			<div class="testArea">
-				<div class="testName">Upload</div>
+				<div class="testName" data-i18n="ui.upload">Upload</div>
 				<canvas id="ulMeter" class="meter"></canvas>
 				<div id="ulText" class="meterText"></div>
-				<div class="unit">Mbps</div>
+				<div class="unit" data-i18n="ui.mbps">Mbps</div>
 			</div>
 		</div>
 		<div id="ipArea">
 			<span id="ip"></span>
 		</div>
 		<div id="shareArea" style="display:none">
-			<h3>Share results</h3>
-			<p>Test ID: <span id="testId"></span></p>
-			<input type="text" value="" id="resultsURL" readonly="readonly" onclick="this.select();this.focus();this.select();document.execCommand('copy');alert('Link copied')"/>
+			<h3 data-i18n="ui.share">Share results</h3>
+			<p><span data-i18n="ui.testId">Test ID:</span> <span id="testId"></span></p>
+			<input type="text" value="" id="resultsURL" readonly="readonly" onclick="this.select();this.focus();this.select();document.execCommand('copy');alert(t('ui.linkCopied'))"/>
 			<img src="" id="resultsImg" />
 		</div>
 	</div>
-	<a href="https://github.com/librespeed/speedtest">Source code</a>
+	<a href="https://github.com/librespeed/speedtest" data-i18n="ui.source">Source code</a>
 </div>
-<div id="privacyPolicy" style="display:none">
+<div id="privacyPolicy" style="display:none" data-i18n-html="policy.body">
     <h2>Privacy Policy</h2>
     <p>This HTML5 Speedtest server is configured with telemetry enabled.</p>
     <h4>What data we collect</h4>
@@ -466,7 +562,7 @@ function initUI(){
     </p>
     <br/><br/>
     <div class="closePrivacyPolicy">
-        <a class="privacy" href="#" onclick="I('privacyPolicy').style.display='none'">Close</a>
+        <a class="privacy" href="#" data-i18n="ui.close" onclick="I('privacyPolicy').style.display='none'">Close</a>
     </div>
     <br/>
 </div>

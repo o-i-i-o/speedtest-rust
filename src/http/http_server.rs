@@ -134,7 +134,7 @@ impl HttpServer {
                         }
                     }
                 } else if matches!(request.method,Method::Get) {
-                    Response::res_200_fs(request.path.trim())
+                    Response::res_200_fs(request.path.trim(), request.headers.get("If-None-Match").map(|s| s.as_str()))
                 } else {
                     Response::res_404()
                 }
