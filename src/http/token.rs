@@ -31,7 +31,7 @@ pub fn validate_token(secret : &str, token : &str, now_millis : i64) -> bool {
     let Some(age) = now_millis.checked_sub(issued_at) else {
         return false;
     };
-    if age < 0 || age > TOKEN_TTL_MILLIS {
+    if !(0..=TOKEN_TTL_MILLIS).contains(&age) {
         return false;
     }
     fixed_time_eq(signature.as_bytes(), sign(secret, token_id, issued_at).as_bytes())

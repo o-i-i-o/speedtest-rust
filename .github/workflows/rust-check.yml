@@ -4,15 +4,17 @@ on:
   push:
     branches: [ "master" ]
     paths:
-      - 'res/**'
+      - 'assets/**'
       - 'src/**'
       - 'Cargo.toml'
+      - 'Cargo.lock'
   pull_request:
     branches: [ "master" ]
     paths:
-      - 'res/**'
+      - 'assets/**'
       - 'src/**'
       - 'Cargo.toml'
+      - 'Cargo.lock'
 
 env:
   CARGO_TERM_COLOR: always
@@ -38,5 +40,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build
         run: cargo build --verbose
+      - name: Run tests
+        run: cargo test --verbose
       - name: Run clippy
-        run: cargo clippy --verbose
+        run: cargo clippy --verbose -- -D warnings

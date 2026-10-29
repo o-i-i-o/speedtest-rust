@@ -36,8 +36,12 @@ impl MethodStr for str {
 }
 
 pub async fn find_remote_ip_addr (conn: &mut TcpStream) -> String {
-    let client_addr = conn.peer_addr().unwrap();
-    client_addr.ip().to_string().replace("::ffff:","")
+    //peer_addr can fail on a socket already closed by the client; that must end the task with a
+    //placeholder, not a panic (panic=abort turns it into a process crash)
+    match conn.peer_addr() {
+        Ok(client_addr) => client_addr.ip().to_string().replace("::ffff:",""),
+        Err(_) => "unknown".to_string(),
+    }
 }
 
 ///request-supplied asset paths must not escape the assets directory.

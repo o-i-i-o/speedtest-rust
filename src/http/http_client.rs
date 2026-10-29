@@ -8,6 +8,7 @@ use tokio::net::TcpStream;
 use tokio_rustls::client::TlsStream;
 use std::io::Write;
 use indicatif::{ProgressBar, ProgressStyle};
+use log::error;
 use crate::http::request::header_parser;
 use crate::http::tls::setup_tls_connector;
 
@@ -59,7 +60,9 @@ impl HttpClient {
         let pared_url = Self::parse_url(url)?;
         let tcp_stream = TcpStream::connect(format!("{}:{}",pared_url.1,pared_url.2)).await?;
         let stream = if pared_url.2 == 443 {
-            let tls_stream = setup_tls_connector(pared_url.1.clone(),tcp_stream).await;
+            //a failed TLS handshake must surface as an error (ipinfo then falls back to the
+            //offline mmdb), not unwrap-panic the request task
+            let tls_stream = setup_tls_connector(pared_url.1.clone(),tcp_stream).await?;
             ClientStream::Tls(Box::from(tls_stream))
         } else {
             ClientStream::Tcp(tcp_stream)
@@ -119,19 +122,34 @@ impl HttpClient {
                 //read body
                 let body_len = parsed_headers.get("Content-Length");
                 if let Some(body_len) = body_len {
-                    let body_len = body_len.parse::<usize>().unwrap();
-                    let pb = ProgressBar::new(body_len as u64);
+                    //this runs on the --update-ipdb CLI path; surface a clear message instead of
+                    //panicking on a bad header or an uncreatable file
+                    let Ok(body_len) = body_len.parse::<u64>() else {
+                        error!("Bad Content-Length header while downloading {file_name}");
+                        return;
+                    };
+                    let pb = ProgressBar::new(body_len);
                     pb.set_style(ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})")
                         .unwrap()
                         .progress_chars("#>-"));
-                    let mut file = File::create(file_name).unwrap();
+                    let mut file = match File::create(file_name) {
+                        Ok(file) => file,
+                        Err(e) => {
+                            error!("Cannot create {file_name}: {e}");
+                            return;
+                        }
+                    };
                     let mut buffer = [0; 1024];
-                    let mut read_buff = 0;
+                    let mut read_buff : u64 = 0;
                     'body_loop:loop {
-                        let n = buf_reader.read(&mut buffer).await.unwrap();
-                        read_buff += n;
-                        pb.set_position(read_buff as u64);
-                        file.write_all(&buffer[..n]).unwrap();
+                        let Ok(n) = buf_reader.read(&mut buffer).await else { break 'body_loop };
+                        if n == 0 { break 'body_loop; }
+                        read_buff += n as u64;
+                        pb.set_position(read_buff.min(body_len));
+                        if let Err(e) = file.write_all(&buffer[..n]) {
+                            error!("Write to {file_name} failed: {e}");
+                            break 'body_loop;
+                        }
                         if read_buff >= body_len {
                             break 'body_loop;
                         }

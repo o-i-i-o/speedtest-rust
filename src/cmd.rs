@@ -10,6 +10,7 @@ pub struct Cmd {
     pub ipinfo_api_key : Option<String>,
     pub assets_path : Option<String>,
     pub stats_password : Option<String>,
+    pub trust_proxy : Option<bool>,
     pub redact_ip_addresses : Option<bool>,
     pub result_image_theme : Option<String>,
     pub database_type : Option<String>,
@@ -83,6 +84,12 @@ impl Cmd {
                     .long("stats-password")
                     .help("Specify the password for logging into statistics page")
                     .value_parser(value_parser!(String))
+            )
+            .arg(
+                Arg::new("trust-proxy")
+                    .long("trust-proxy")
+                    .help("Honor X-Real-IP / X-Forwarded-For (enable only behind a trusted reverse proxy)")
+                    .value_parser(value_parser!(bool))
             )
             .arg(
                 Arg::new("redact-ips")
@@ -159,6 +166,7 @@ impl Cmd {
         let ipinfo_api_key : Option<String> = args.get_one::<String>("ipinfo-api-key").map(|s| s.to_owned());
         let assets_path : Option<String> = args.get_one::<String>("assets-path").map(|s| s.to_owned());
         let stats_password : Option<String> = args.get_one::<String>("stats-password").map(|s| s.to_owned());
+        let trust_proxy : Option<bool> = args.get_one::<bool>("trust-proxy").map(|s| s.to_owned());
         let redact_ip_addresses : Option<bool> = args.get_one::<bool>("redact-ips").map(|s| s.to_owned());
         let result_image_theme : Option<String> = args.get_one::<String>("result-image-theme").map(|s| s.to_owned());
         let database_type : Option<String> = args.get_one::<String>("database-type").map(|s| s.to_owned());
@@ -179,6 +187,7 @@ impl Cmd {
             ipinfo_api_key,
             assets_path,
             stats_password,
+            trust_proxy,
             redact_ip_addresses,
             result_image_theme,
             database_type,

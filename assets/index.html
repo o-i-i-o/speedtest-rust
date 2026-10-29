@@ -228,7 +228,9 @@ function startStop(){
 						const shareURL = window.location.href.substring(0, window.location.href.lastIndexOf("/")) + "/backend/results/?id=" + testId;
 						I("resultsImg").src=shareURL;
                         I("resultsURL").value=shareURL;
-                        I("testId").innerHTML=testId;
+                        //textContent, not innerHTML: testId is a server-supplied string and must
+                        //not be parsed as markup (defense in depth against a forged telemetry body)
+                        I("testId").textContent=testId;
                         I("shareArea").style.display="";
                     }
                 }catch(e){}

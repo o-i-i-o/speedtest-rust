@@ -120,18 +120,21 @@ pub fn draw_result (data : &TelemetryData) -> Vec<u8> {
     let l_mbps = "Mbps";
     let l_watermark = "LibreSpeed";
 
-    //text sizes
-    let ping_text_size = cal_text_size(font, l_ping, ping_jitter_name_scale);
-    let ping_value_text_size = cal_text_size(font, &data.ping, ping_jitter_value_scale);
-    let jitter_text_size = cal_text_size(font, l_jitter, ping_jitter_name_scale);
-    let jitter_value_text_size = cal_text_size(font, &data.jitter, ping_jitter_value_scale);
-    let ms_text_size = cal_text_size(font, l_ms, unit_scale);
-    let download_text_size = cal_text_size(font, l_dl, d_u_name_scale);
-    let download_value_text_size = cal_text_size(font, &data.download, d_u_value_scale);
-    let upload_text_size = cal_text_size(font, l_ul, d_u_name_scale);
-    let upload_value_text_size = cal_text_size(font, &data.upload, d_u_value_scale);
-    let mbps_text_size = cal_text_size(font, l_mbps, unit_scale);
-    let watermark_text_size = cal_text_size(font, l_watermark, footer_scale);
+    //text sizes. every value string is client-supplied telemetry, so each dimension is clamped:
+    //`width_quarter - huge/2` on u32 would underflow, panicking under debug overflow-checks
+    //and misplacing text under release. saturating casts keep draw_result infallible
+    let sz = |(w, h) : (u32,u32)| (w.min(4000), h.min(4000));
+    let ping_text_size = sz(cal_text_size(font, l_ping, ping_jitter_name_scale));
+    let ping_value_text_size = sz(cal_text_size(font, &data.ping, ping_jitter_value_scale));
+    let jitter_text_size = sz(cal_text_size(font, l_jitter, ping_jitter_name_scale));
+    let jitter_value_text_size = sz(cal_text_size(font, &data.jitter, ping_jitter_value_scale));
+    let ms_text_size = sz(cal_text_size(font, l_ms, unit_scale));
+    let download_text_size = sz(cal_text_size(font, l_dl, d_u_name_scale));
+    let download_value_text_size = sz(cal_text_size(font, &data.download, d_u_value_scale));
+    let upload_text_size = sz(cal_text_size(font, l_ul, d_u_name_scale));
+    let upload_value_text_size = sz(cal_text_size(font, &data.upload, d_u_value_scale));
+    let mbps_text_size = sz(cal_text_size(font, l_mbps, unit_scale));
+    let watermark_text_size = sz(cal_text_size(font, l_watermark, footer_scale));
 
 
     //drawing ....
@@ -199,9 +202,12 @@ pub fn draw_result (data : &TelemetryData) -> Vec<u8> {
     //isp_info
     x = unit_padding;
     y = img.height() - (watermark_text_size.1 * 2) - (unit_padding * 5);
-    let isp_info : IPInfo = serde_json::from_str(&data.isp_info).unwrap();
-    draw_text_mut(&mut img,theme.text_head,x as i32,y as i32,PxScale::from(footer_scale),font,&isp_info.processedString);
-    drop(isp_info);
+    //stored isp_info is client-supplied telemetry: legacy or hand-inserted rows may not be the
+    //IPInfo JSON this used to unwrap() - a parse failure must drop the footer line, not abort
+    //the whole process under the release profile's panic=abort
+    if let Ok(isp_info) = serde_json::from_str::<IPInfo>(&data.isp_info) {
+        draw_text_mut(&mut img,theme.text_head,x as i32,y as i32,PxScale::from(footer_scale),font,&isp_info.processedString);
+    }
 
     //footer divider
     let divider_y = (img.height() - watermark_text_size.1 - (unit_padding * 3)) as f32;

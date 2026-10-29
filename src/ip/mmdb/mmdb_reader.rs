@@ -18,7 +18,13 @@ impl MMDBReader {
     }
 
     pub fn lookup(&mut self, address: &str) -> Option<MMDBResult> {
-        match self.reader.lookup(address.parse().unwrap()) {
+        //the address ultimately comes from a request header (when trust_proxy is on): an
+        //unparsable IP must be a miss, not an unwrap panic that aborts the whole process
+        let Ok(ip) = address.parse() else {
+            warn!("Invalid ip for geo lookup: {address:?}");
+            return None;
+        };
+        match self.reader.lookup(ip) {
             Err(e) => {
                 warn!("Geo IP database error: {}", e);
                 None

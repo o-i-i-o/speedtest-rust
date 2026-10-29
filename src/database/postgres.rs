@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use log::info;
 use sqlx::{postgres::{PgPool, PgPoolOptions, PgRow}, Row};
 use tokio::sync::Mutex;
-use crate::database::{Database, DBRawToStruct};
+use crate::database::{Database, DBRawToStruct, escape_db_component};
 use crate::results::TelemetryData;
 
 pub struct Postgres {
@@ -22,12 +22,14 @@ impl Postgres {
             return Err(std::io::Error::other("Error postgres initialize parameters."));
         }
 
+        //userinfo and database name are percent-encoded: a password with `@ : / ?` would
+        //otherwise move the authority boundary and the raw secret could land in logged errors
         let conn_url = format!(
             "postgresql://{}:{}@{}/{}",
-            username.clone().unwrap(),
-            password.clone().unwrap(),
+            escape_db_component(username.as_deref().unwrap_or_default()),
+            escape_db_component(password.as_deref().unwrap_or_default()),
             host_name.clone().unwrap(),
-            db_name.clone().unwrap()
+            escape_db_component(db_name.as_deref().unwrap_or_default()),
         );
 
         let pool = PgPoolOptions::new()

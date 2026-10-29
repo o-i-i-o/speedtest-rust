@@ -34,14 +34,17 @@ pub async fn show_result_route (database : &mut Arc<Mutex<dyn Database + Send>>,
     let result_id = params.get("id");
     match result_id {
         Some(result_id) => {
-            let mut db = database.lock().await;
-            let fetched_result = db.fetch_by_uuid(result_id).await;
+            let fetched_result = {
+                let mut db = database.lock().await;
+                //fetch holds the pool lock; the CPU-bound render below must happen outside it,
+                //otherwise every image request serializes the whole database layer
+                db.fetch_by_uuid(result_id).await
+            };
             match fetched_result {
                 Ok(fetched_result) => {
                     match fetched_result {
                         Some(fetched_telemetry_data) => {
                             let image = draw_result(&fetched_telemetry_data);
-                            drop(fetched_telemetry_data);
                             Response::res_200_img(&image)
                         }
                         None => {

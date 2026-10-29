@@ -62,10 +62,15 @@ impl Response {
     }
 
     pub fn res_400 () -> Self {
-        let body = b"400 bad request";
+        Self::simple_status("400 Bad Request", b"400 bad request")
+    }
+
+    ///minimal fixed-body error, used for pre-read rejections where no handler ran
+    fn simple_status (status : &str, body : &[u8]) -> Self {
         let response_header = format!(
-            "HTTP/1.1 400 Bad Request\r\n\
+            "HTTP/1.1 {status}\r\n\
             Content-Length: {}\r\n\
+            Connection: close\r\n\
             Access-Control-Allow-Origin: *\r\n\
             Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\r\n",
             body.len()
@@ -229,6 +234,7 @@ impl Response {
         let response_header = format!(
             "HTTP/1.1 200 OK\r\n\
             Content-Length: {}\r\n\
+            Content-Type: text/plain; charset=utf-8\r\n\
             Cache-Control: no-store, no-cache, must-revalidate, max-age=0, s-maxage=0\r\n\
             Cache-Control: post-check=0, pre-check=0\r\n\
             Pragma: no-cache\r\n\
@@ -263,6 +269,11 @@ impl Response {
 
     pub fn res_403_json (content : &str) -> Self {
         json_response("403 Forbidden",content)
+    }
+
+    ///too many failed stats logins from this address inside the rate-limit window
+    pub fn res_429_json (content : &str) -> Self {
+        json_response("429 Too Many Requests",content)
     }
 
     ///CORS preflight answer for the split-out stats front-end: browsers require a 2xx that lists
@@ -306,6 +317,7 @@ mod tests {
             ipinfo_api_key: "".to_string(),
             stats_password: "".to_string(),
             stats_secret: "unit-test-secret".to_string(),
+            trust_proxy: false,
             redact_ip_addresses: false,
             result_image_theme: "light".to_string(),
             assets_path: "".to_string(),
@@ -342,10 +354,10 @@ mod tests {
         let mut out = Vec::new();
         let mut rest = haystack;
         while let Some(i) = rest.find(call) {
-            let boundary_ok = rest[..i]
-                .chars()
-                .next_back()
-                .map_or(true, |c| !(c.is_alphanumeric() || c == '_' || c == '$'));
+            let boundary_ok = match rest[..i].chars().next_back() {
+                Some(c) => !(c.is_alphanumeric() || c == '_' || c == '$'),
+                None => true,
+            };
             rest = &rest[i + call.len()..];
             let Some(end) = rest.find(quote) else { break };
             if boundary_ok { out.push(rest[..end].to_string()); }

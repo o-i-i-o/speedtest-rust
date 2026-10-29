@@ -39,6 +39,22 @@ pub fn generate_uuid () -> String {
     Uuid::new_v4().to_string()
 }
 
+///percent-encode one path or userinfo segment of a connection URL. Credentials straight from
+///configs.toml are interpolated into `scheme://user:pass@host/db`, so a password carrying
+///`@ : / ? # %` used to silently move the authority boundary (misparsed host, or the tail of
+///the secret leaking into a logged error). Unreserved chars stay literal, everything else
+///becomes %XX byte-by-byte, which is always valid UTF-8 once sqlx percent-decodes the URL
+pub fn escape_db_component (component : &str) -> String {
+    let mut out = String::with_capacity(component.len());
+    for byte in component.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(*byte as char),
+            b => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 pub async fn init () -> std::io::Result<Arc<Mutex<dyn Database + Send>>> {
     let config = SERVER_CONFIG.get().unwrap();
     match config.database_type.as_str() {
@@ -64,5 +80,20 @@ pub async fn init () -> std::io::Result<Arc<Mutex<dyn Database + Send>>> {
         _ => {
             Err(Error::other("Invalid database type."))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::escape_db_component;
+
+    #[test]
+    fn credential_characters_that_would_break_the_connection_url_are_escaped() {
+        //regression: p@ss:word/1?#% used to reparse as a different authority (and the `#` tail
+        //dropped entirely), while error echoes could leak the raw secret into logs
+        assert_eq!(escape_db_component("simple-User_1.0"), "simple-User_1.0");
+        assert_eq!(escape_db_component("p@ss:word/1?#%"), "p%40ss%3Aword%2F1%3F%23%25");
+        //non-ASCII secrets survive the round trip as their UTF-8 bytes, hex-escaped
+        assert_eq!(escape_db_component("é"), "%C3%A9");
     }
 }

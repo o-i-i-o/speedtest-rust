@@ -167,10 +167,13 @@ async function initI18n(){
 	const TOKEN_KEY = "librespeed_stats_token";
 
 	const el = id => document.getElementById(id);
+	//the bearer token lives in sessionStorage, not localStorage: it is scoped to this tab and
+	//wiped when the tab closes, so a shared/forgotten machine does not keep a reusable credential
+	//around (the 1h TTL still bounds it server-side). The lang preference stays in localStorage.
 	const tokenStorage = {
-		get: () => localStorage.getItem(TOKEN_KEY) || "",
-		set: t => localStorage.setItem(TOKEN_KEY, t),
-		clear: () => localStorage.removeItem(TOKEN_KEY),
+		get: () => sessionStorage.getItem(TOKEN_KEY) || "",
+		set: t => sessionStorage.setItem(TOKEN_KEY, t),
+		clear: () => sessionStorage.removeItem(TOKEN_KEY),
 	};
 
 	//results are rendered imperatively, so remember the raw rows to re-localize table labels

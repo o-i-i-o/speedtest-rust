@@ -47,6 +47,11 @@ pub struct ServerConfig {
     //and an empty value is replaced by a random secret at startup (see initialize)
     #[serde(default)]
     pub stats_secret : String,
+    //honor X-Real-IP / X-Forwarded-For for the client address. Off by default: on a directly
+    //exposed deployment these headers are attacker-supplied (forged telemetry IPs, poisoned
+    //login rate limiting). Enable only behind a reverse proxy that overwrites them
+    #[serde(default)]
+    pub trust_proxy : bool,
     pub redact_ip_addresses : bool,
     pub result_image_theme : String,
     pub assets_path : String,
@@ -71,6 +76,7 @@ impl Default for ServerConfig {
             ipinfo_api_key: "".to_string(),
             stats_password: "".to_string(),
             stats_secret: "".to_string(),
+            trust_proxy: false,
             redact_ip_addresses: false,
             result_image_theme: "light".to_string(),
             assets_path: "".to_string(),
@@ -212,6 +218,7 @@ fn initialize (mut config: ServerConfig,cmd : Cmd) -> std::io::Result<()> {
     config.ipinfo_api_key.set_if_some(cmd.ipinfo_api_key);
     config.assets_path.set_if_some(cmd.assets_path);
     config.stats_password.set_if_some(cmd.stats_password);
+    config.trust_proxy.set_if_some(cmd.trust_proxy);
     config.redact_ip_addresses.set_if_some(cmd.redact_ip_addresses);
     config.result_image_theme.set_if_some(cmd.result_image_theme);
     config.database_type.set_if_some(cmd.database_type);
@@ -260,6 +267,13 @@ fn check_assets_path (dir : &str) -> bool {
 
 /*Static Values*/
 const CHUNK_SIZE : usize = 524288; //512 Kilobytes x2
+///hard caps on inbound bodies, checked before any allocation or drain loop (see http::request).
+///telemetry/login forms are kilobyte-sized; uploads (Content-Length Fixed bodies) get headroom
+///above the biggest LibreSpeed client default (1 GiB ulSize), chunked streams a stricter cap
+///because they are only ever discarded, never parsed
+pub const MAX_FORM_BODY_BYTES : u64 = 64 * 1024;
+pub const MAX_BODY_SIZE_BYTES : u64 = 512 * 1024 * 1024;
+pub const MAX_CHUNKED_BODY_BYTES : u64 = 16 * 1024 * 1024;
 pub static ROUTES: OnceLock<HashMap<String,&str>> = OnceLock::new();
 pub static GARBAGE_DATA: OnceLock<Vec<u8>> = OnceLock::new();
 pub static SERVER_CONFIG: OnceLock<ServerConfig> = OnceLock::new();

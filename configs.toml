@@ -25,6 +25,11 @@ stats_password=""
 # (tokens then expire on restart); set a fixed secret to keep logins valid across restarts.
 stats_secret=""
 
+# honor X-Real-IP / X-Forwarded-For to report the client address. Keep false unless the server
+# sits behind a reverse proxy that overwrites these headers, otherwise clients can forge their IP
+# in telemetry and stats. Also required for correct IPs when running behind nginx/caddy.
+trust_proxy=false
+
 # redact IP addresses
 redact_ip_addresses=false
 

@@ -24,7 +24,12 @@ impl Database for MemoryDB {
     async fn insert(&mut self, data: TelemetryData) -> std::io::Result<()> {
         self.records.insert(data.uuid.clone(),data);
         if self.records.len() > 100 {
-            if let Some(key) = self.records.iter().next().map(|entry| entry.key().clone()) {
+            //DashMap iteration order is arbitrary; evicting by iteration drops a random record and
+            //lets the "last 100" silently lose the actual newest entries
+            let oldest = self.records.iter()
+                .min_by_key(|entry| entry.value().timestamp)
+                .map(|entry| entry.key().clone());
+            if let Some(key) = oldest {
                 self.records.remove(&key);
             }
         }
@@ -36,7 +41,9 @@ impl Database for MemoryDB {
     }
 
     async fn fetch_last_100(&mut self) -> std::io::Result<Vec<TelemetryData>> {
-        let data : Vec<TelemetryData> = self.records.iter().map(|item| item.value().clone()).collect();
+        //match the SQL backends' contract: newest first, so the stats page reads sensibly
+        let mut data : Vec<TelemetryData> = self.records.iter().map(|item| item.value().clone()).collect();
+        data.sort_by_key(|a| std::cmp::Reverse(a.timestamp));
         Ok(data)
     }
 }

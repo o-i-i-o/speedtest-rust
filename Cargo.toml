@@ -1,7 +1,7 @@
 [package]
 name = "librespeed-rs"
 version = "1.4.0"
-edition = "2021"
+edition = "2024"
 authors = ["Sudo Dios"]
 description = "Rust backend for LibreSpeed"
 
@@ -14,9 +14,9 @@ postgres = ["sqlx/postgres"]
 
 [dependencies]
 #async net
-tokio = {version = "1.53.1", features = ["net","io-util","rt","macros","rt-multi-thread","sync","signal","time"]}
-tokio-rustls = {version = "0.26.4", features = ["tls12","ring"], default-features = false}
-webpki-roots = "1.0.9"
+tokio = {version = "1.54.1", features = ["net","io-util","rt","macros","rt-multi-thread","sync","signal","time"]}
+tokio-rustls = {version = "0.26.6", features = ["tls12","ring"], default-features = false}
+webpki-roots = "1.0.11"
 rustls-pemfile = "2.2.0"
 socket2 = "0.6.5"
 listenfd = "1.0.2"
@@ -24,26 +24,26 @@ futures = "0.3.34"
 dashmap = "7.0.0-rc2"
 async-trait = "0.1.92"
 #ip
-maxminddb = "0.30.0"
+maxminddb = "0.32.0"
 #image processing
 imageproc = "0.27.0"
 ab_glyph = "0.2.32"
 #serializer
-serde_json = "1.0.151"
+serde_json = "1.0.154"
 serde = { version = "1.0.229", features = ["derive"] }
 #databases
-uuid = { version = "1.24", features = ["v4"] }
+uuid = { version = "1.29", features = ["v4"] }
 chrono = "0.4.45"
 sqlx = { version = "0.9.0",default-features = false, features = ["runtime-tokio","sqlite","mysql-rsa","postgres"], optional = true }
 #conf
-clap = { version = "4.6.6",features = ["std","color","help","usage"],default-features = false }
-toml = "1.1.2"
+clap = { version = "4.6.7",features = ["std","color","help","usage"],default-features = false }
+toml = "1.1.8"
 #web
-sha2 = "0.11.0"
+sha2 = "0.11.1"
 hmac = "0.13.0"
 #logging
 env_logger = { version = "0.11.11",default-features = false,features = ["auto-color","humantime"] }
-log = "0.4.33"
+log = "0.4.34"
 indicatif = "0.18.6"
 #assets
 include_dir = "0.7.4"
