@@ -1,5 +1,5 @@
 [package]
-name = "librespeed-rs"
+name = "speedtest-rs"
 version = "1.4.0"
 edition = "2024"
 authors = ["Sudo Dios"]
