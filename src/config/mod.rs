@@ -5,7 +5,7 @@ use std::sync::OnceLock;
 
 use ab_glyph::FontRef;
 use include_dir::{include_dir, Dir};
-use log::{info, LevelFilter, trace};
+use log::{info, warn, LevelFilter, trace};
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::runtime::{Builder, Runtime};
@@ -43,6 +43,10 @@ pub struct ServerConfig {
     pub base_url : String,
     pub ipinfo_api_key : String,
     pub stats_password : String,
+    //signing key for the stats bearer token; `#[serde(default)]` keeps existing configs.toml files valid
+    //and an empty value is replaced by a random secret at startup (see initialize)
+    #[serde(default)]
+    pub stats_secret : String,
     pub redact_ip_addresses : bool,
     pub result_image_theme : String,
     pub assets_path : String,
@@ -66,6 +70,7 @@ impl Default for ServerConfig {
             base_url: "backend".to_string(),
             ipinfo_api_key: "".to_string(),
             stats_password: "".to_string(),
+            stats_secret: "".to_string(),
             redact_ip_addresses: false,
             result_image_theme: "light".to_string(),
             assets_path: "".to_string(),
@@ -189,16 +194,21 @@ fn generate_routes(base_url : &str) {
     routes.insert(format!("{base_url}/getIP"),"getIP");
     routes.insert(format!("{base_url}/results"),"results");
     routes.insert(format!("{base_url}/results/telemetry"),"results/telemetry");
-    routes.insert(format!("{base_url}/stats"),"stats");
+    //the stats page is a static asset now; these are the json endpoints it calls
+    routes.insert(format!("{base_url}/stats"),"stats"); //legacy SSR entry, kept as a redirect
+    routes.insert(format!("{base_url}/stats/login"),"stats/login");
+    routes.insert(format!("{base_url}/stats/data"),"stats/data");
     ROUTES.get_or_init(|| routes);
 }
 
 fn initialize (mut config: ServerConfig,cmd : Cmd) -> std::io::Result<()> {
     //server config
-    config.base_url = validate_base_url_path(&config.base_url);
+    //the CLI override happens before the normalization: otherwise `--base-url backend` skips
+    //validate_base_url_path and routes get registered without the leading slash, 404-ing everything
     config.bind_address.set_if_some(cmd.bind_address);
     config.listen_port.set_if_some(cmd.listen_port);
     config.base_url.set_if_some(cmd.base_url);
+    config.base_url = validate_base_url_path(&config.base_url);
     config.ipinfo_api_key.set_if_some(cmd.ipinfo_api_key);
     config.assets_path.set_if_some(cmd.assets_path);
     config.stats_password.set_if_some(cmd.stats_password);
@@ -213,6 +223,13 @@ fn initialize (mut config: ServerConfig,cmd : Cmd) -> std::io::Result<()> {
     config.enable_tls.set_if_some(cmd.enable_tls);
     config.tls_cert_file.set_if_some(cmd.tls_cert_file);
     config.tls_key_file.set_if_some(cmd.tls_key_file);
+    //stats token signing key: never fall back to a compiled-in constant. When unset, mint a random
+    //one for this process so tokens stop validating after a restart - the safe default for a
+    //self-hosted stats page; set stats_secret in configs.toml to keep logins across restarts.
+    if config.stats_secret.is_empty() {
+        config.stats_secret = format!("{}{}",crate::database::generate_uuid(),crate::database::generate_uuid());
+        warn!("stats_secret is empty: generated a random one for this run. Set it in configs.toml to keep stats logins across restarts.");
+    }
     generate_routes(&config.base_url);
     if !config.assets_path.is_empty() {
         if check_assets_path(&config.assets_path) {

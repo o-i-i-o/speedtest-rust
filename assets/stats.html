@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title data-i18n="stats.title">LibreSpeed - Stats</title>
+<script type="text/javascript">
+//I18N: inline en fallback dictionary, keep in sync with locales/en.json (same contract as index.html)
+const LOCALE_EN = {
+	"stats.title":"LibreSpeed - Stats","stats.loginHeading":"Login","stats.password":"Password",
+	"stats.loginBtn":"Login","stats.logout":"Logout","stats.searchHeading":"Search test results",
+	"stats.testId":"Test ID","stats.find":"Find","stats.showLast":"Show last 100 tests",
+	"stats.col.testId":"Test ID","stats.col.datetime":"Date and time","stats.col.ipIsp":"IP and ISP Info",
+	"stats.col.uaLocale":"User agent and locale","stats.col.download":"Download speed","stats.col.upload":"Upload speed",
+	"stats.col.ping":"Ping","stats.col.jitter":"Jitter","stats.col.log":"Log","stats.col.extra":"Extra info",
+	"stats.noResults":"No results.","stats.disabled":"Statistics are disabled.","stats.wrongPassword":"Wrong password.",
+	"stats.loginFailed":"Login failed.","stats.loadFailed":"Failed to load results.","stats.pleaseLogin":"Please log in.",
+	"stats.notConfigured":"Please set stats_password in configs.toml to enable access."
+};
+let I18N_DICT = LOCALE_EN;
+function t(k){ const v = I18N_DICT[k]; return v !== undefined ? v : (LOCALE_EN[k] !== undefined ? LOCALE_EN[k] : null); }
+//the status line is written imperatively, so remember its current key for late re-localization
+let statusKey = "";
+function applyDict(dict){
+	document.querySelectorAll("[data-i18n]").forEach(el => {
+		const tr = dict[el.dataset.i18n];
+		if (tr !== undefined) el.textContent = tr;
+	});
+	//input placeholders are attributes, not text nodes, so they need their own binding
+	document.querySelectorAll("[data-i18n-placeholder]").forEach(el => {
+		const tr = dict[el.dataset.i18nPlaceholder];
+		if (tr !== undefined) el.placeholder = tr;
+	});
+	//re-render anything written imperatively since the last dictionary swap
+	if (statusKey) setStatus(statusKey);
+	if (messageKey) el("results").textContent = t(messageKey);
+	else if (lastResults !== null) renderResults(lastResults);
+}
+function localizeLang(dict, meta){
+	I18N_DICT = dict;
+	document.documentElement.lang = meta.code;
+	document.documentElement.dir = meta.dir || "ltr";
+	applyDict(dict);
+}
+function detectLangs(){
+	const out = [];
+	try{ const q = new URLSearchParams(window.location.search).get("lang"); if (q) out.push(q); }catch(e){}
+	try{ const s = localStorage.getItem("lang"); if (s) out.push(s); }catch(e){}
+	const nav = navigator.languages || [navigator.language];
+	for (const l of nav) if (l) out.push(l);
+	return out;
+}
+function pickLocale(codes, locales){
+	const norm = c => String(c).toLowerCase().replace(/_/g, "-");
+	const byNorm = {};
+	for (const l of locales) byNorm[norm(l.code)] = l;
+	for (const c of codes){
+		const n = norm(c);
+		if (byNorm[n]) return byNorm[n];
+		const base = n.split("-")[0];
+		if (byNorm[base]) return byNorm[base];
+	}
+	return null;
+}
+async function initI18n(){
+	applyDict(LOCALE_EN); //set defaults before any async swap
+	let manifest = null;
+	try{ manifest = await (await fetch("locales/manifest.json", { cache:"no-cache" })).json(); }catch(e){}
+	if (!manifest || !Array.isArray(manifest.locales)) return; //no locales served -> stay en
+	const loc = pickLocale(detectLangs(), manifest.locales);
+	if (!loc || String(loc.code).toLowerCase() === "en") return;
+	try{
+		const dict = await (await fetch("locales/" + loc.code + ".json?v=" + (manifest.version || "0"), { cache:"no-cache" })).json();
+		localizeLang(Object.assign({}, LOCALE_EN, dict), loc); //missing keys fall back to inline en
+	}catch(e){}
+}
+</script>
+<style type="text/css">
+	html,body{
+		margin:0;
+		padding:0;
+		border:none;
+		width:100%; min-height:100%;
+	}
+	html{
+		background-color: hsl(198,72%,35%);
+		font-family: "Segoe UI","Roboto",sans-serif;
+	}
+	body{
+		background-color:#FFFFFF;
+		box-sizing:border-box;
+		width:100%;
+		max-width:70em;
+		margin:4em auto;
+		box-shadow:0 1em 6em #00000080;
+		padding:1em 1em 4em 1em;
+		border-radius:0.4em;
+	}
+	h1,h2,h3,h4,h5,h6{
+		font-weight:300;
+		margin-bottom: 0.1em;
+	}
+	h1{
+		text-align:center;
+	}
+	table{
+		margin:2em 0;
+		width:100%;
+		border-collapse:collapse;
+	}
+	table, tr, th, td {
+		border: 1px solid #AAAAAA;
+	}
+	th {
+		width: 6em;
+		padding: 0.3em;
+		text-align:left;
+		vertical-align:top;
+	}
+	td {
+		word-break: break-all;
+		white-space: pre-line; /*render the \n joins (IP/ISP, UA/locale) as line breaks, like the old <br/>*/
+		padding: 0.3em;
+		vertical-align:top;
+	}
+	input,button{
+		font-size:1em;
+		padding:0.3em 0.6em;
+		margin:0.2em 0.2em 0.2em 0;
+	}
+	#status{
+		color:#a00;
+		min-height:1.2em;
+	}
+	.hidden{
+		display:none;
+	}
+</style>
+</head>
+<body>
+<h1 data-i18n="stats.title">LibreSpeed - Stats</h1>
+
+<!-- login view -->
+<form id="loginView">
+	<h3 data-i18n="stats.loginHeading">Login</h3>
+	<input type="password" id="password" data-i18n-placeholder="stats.password" placeholder="Password" autocomplete="current-password" />
+	<button type="submit" data-i18n="stats.loginBtn">Login</button>
+</form>
+
+<!-- toolbar view: only shown once authenticated -->
+<div id="toolbarView" class="hidden">
+	<button type="button" id="logoutBtn" data-i18n="stats.logout">Logout</button>
+	<h3 data-i18n="stats.searchHeading">Search test results</h3>
+	<input type="text" id="searchId" data-i18n-placeholder="stats.testId" placeholder="Test ID" />
+	<button type="button" id="findBtn" data-i18n="stats.find">Find</button>
+	<button type="button" id="lastBtn" data-i18n="stats.showLast">Show last 100 tests</button>
+</div>
+
+<div id="status"></div>
+<div id="results"></div>
+
+<script type="text/javascript">
+	//The stats page is served as a static file, so unlike servers_list.js it cannot have base_url
+	//injected by the backend. It follows the same convention as speedtest_worker.js and expects the
+	//API under `backend/`; change this one constant if you run with a different base_url.
+	const API_BASE = "backend/stats";
+	const TOKEN_KEY = "librespeed_stats_token";
+
+	const el = id => document.getElementById(id);
+	const tokenStorage = {
+		get: () => localStorage.getItem(TOKEN_KEY) || "",
+		set: t => localStorage.setItem(TOKEN_KEY, t),
+		clear: () => localStorage.removeItem(TOKEN_KEY),
+	};
+
+	//results are rendered imperatively, so remember the raw rows to re-localize table labels
+	let lastResults = null;
+	//a plain info banner (disabled / not configured) is keyed too, for late re-localization
+	let messageKey = "";
+
+	//telemetry rows carry user-controlled text (user agent, extra info, ...); always set them via
+	//textContent rather than innerHTML so a malicious client cannot inject markup into this page.
+	function renderResults(results){
+		lastResults = results;
+		messageKey = "";
+		const container = el("results");
+		container.textContent = "";
+		if (!Array.isArray(results) || results.length === 0){
+			const p = document.createElement("p");
+			p.textContent = t("stats.noResults");
+			container.appendChild(p);
+			return;
+		}
+		for (const r of results){
+			const table = document.createElement("table");
+			addRow(table, t("stats.col.testId"), r.uuid);
+			addRow(table, t("stats.col.datetime"), formatTimestamp(r.timestamp));
+			addRow(table, t("stats.col.ipIsp"), [r.ip_address, r.isp_info].join("\n"));
+			addRow(table, t("stats.col.uaLocale"), [r.user_agent, r.lang].join("\n"));
+			addRow(table, t("stats.col.download"), r.download);
+			addRow(table, t("stats.col.upload"), r.upload);
+			addRow(table, t("stats.col.ping"), r.ping);
+			addRow(table, t("stats.col.jitter"), r.jitter);
+			addRow(table, t("stats.col.log"), r.log);
+			addRow(table, t("stats.col.extra"), r.extra);
+			container.appendChild(table);
+		}
+	}
+
+	function addRow(table, label, value){
+		const tr = document.createElement("tr");
+		const th = document.createElement("th");
+		th.textContent = label;
+		const td = document.createElement("td");
+		td.textContent = value == null ? "" : String(value);
+		tr.appendChild(th);
+		tr.appendChild(td);
+		table.appendChild(tr);
+	}
+
+	//timestamps arrive as epoch milliseconds (the server-side handlebars helper is gone now)
+	function formatTimestamp(ms){
+		if (typeof ms !== "number" || Number.isNaN(ms)) return "";
+		const d = new Date(ms);
+		const pad = n => String(n).padStart(2, "0");
+		return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} `
+			+ `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+	}
+
+	function showLogin(){
+		el("loginView").classList.remove("hidden");
+		el("toolbarView").classList.add("hidden");
+		el("results").textContent = "";
+		lastResults = null;
+		messageKey = "";
+	}
+
+	function showToolbar(){
+		el("loginView").classList.add("hidden");
+		el("toolbarView").classList.remove("hidden");
+	}
+
+	//a terminal info state (statistics disabled, or not configured): show neither form, just the message
+	function showMessage(key){
+		el("loginView").classList.add("hidden");
+		el("toolbarView").classList.add("hidden");
+		lastResults = null;
+		messageKey = key;
+		el("results").textContent = t(key);
+		setStatus("");
+	}
+
+	//status is keyed so a late locale swap can re-translate it (same reason index.html tracks msgKey)
+	function setStatus(key){
+		statusKey = key;
+		el("status").textContent = key ? t(key) : "";
+	}
+
+	async function login(password){
+		setStatus("");
+		//password is posted as urlencoded form data, the format the backend body parser reads
+		const res = await fetch(`${API_BASE}/login`, {
+			method: "POST",
+			headers: { "Content-Type": "application/x-www-form-urlencoded" },
+			body: "password=" + encodeURIComponent(password),
+		});
+		if (res.status === 403){
+			setStatus("stats.wrongPassword");
+			return false;
+		}
+		if (!res.ok){
+			setStatus("stats.loginFailed");
+			return false;
+		}
+		const data = await res.json();
+		if (data.statistics === false){
+			showMessage("stats.disabled");
+			return false;
+		}
+		if (data.configured === false){
+			showMessage("stats.notConfigured");
+			return false;
+		}
+		if (data.token){
+			tokenStorage.set(data.token);
+		}
+		return true;
+	}
+
+	async function loadData(id){
+		setStatus("");
+		const url = id ? `${API_BASE}/data?id=${encodeURIComponent(id)}` : `${API_BASE}/data`;
+		const headers = {};
+		const token = tokenStorage.get();
+		if (token) headers["Authorization"] = "Bearer " + token;
+		const res = await fetch(url, { headers });
+		if (res.status === 401){
+			tokenStorage.clear();
+			showLogin();
+			setStatus("stats.pleaseLogin");
+			return;
+		}
+		if (!res.ok){
+			setStatus("stats.loadFailed");
+			return;
+		}
+		const data = await res.json();
+		if (data.statistics === false){
+			showMessage("stats.disabled");
+			return;
+		}
+		if (data.configured === false){
+			//no stats_password set: nothing is served and there is no login to show
+			showMessage("stats.notConfigured");
+			return;
+		}
+		showToolbar();
+		renderResults(data.results);
+	}
+
+	el("loginView").addEventListener("submit", async e => {
+		e.preventDefault();
+		const pwd = el("password").value;
+		if (await login(pwd)){
+			el("password").value = "";
+			loadData(""); //default view: last 100
+		}
+	});
+
+	el("findBtn").addEventListener("click", () => loadData(el("searchId").value.trim()));
+	el("lastBtn").addEventListener("click", () => { el("searchId").value = ""; loadData(""); });
+	el("logoutBtn").addEventListener("click", () => { tokenStorage.clear(); showLogin(); setStatus(""); });
+
+	//resolve the locale first so the very first table is already translated, then probe the API:
+	//a public (no-password) deployment loads directly, a protected one 401s and falls back to login.
+	initI18n().then(() => loadData(""));
+</script>
+</body>
+</html>

@@ -350,11 +350,35 @@ fn parse_form_url_encoded(body : &[u8]) -> HashMap<String,String> {
     let mut form_data = HashMap::new();
     for part in split_parts {
         let mut split_key_value = part.splitn(2,'=');
-        if let (Some(key),Some(value)) = (split_key_value.next(),split_key_value.next()) {
-            form_data.insert(key.to_string(),value.to_string());
+        if let (Some(key),Some(value)) = (split_key_value.next(),split_key_value.next())  {
+            //percent-decode both sides: the stats login form url-encodes the password, so a secret
+            //containing a space, '+', '%' or a non-ASCII byte only matches once decoded here
+            form_data.insert(percent_decode(key),percent_decode(value));
         }
     };
     form_data
+}
+
+///`application/x-www-form-urlencoded` decoder: '+' is a literal space, `%XX` is a byte; a stray
+///or invalid percent sign is kept verbatim rather than dropping the field.
+fn percent_decode(input : &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => { out.push(b' '); i += 1; }
+            b'%' if i + 2 < bytes.len() => {
+                match u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16) {
+                    Ok(byte) => { out.push(byte); i += 3; }
+                    Err(_) => { out.push(b'%'); i += 1; }
+                }
+            }
+            b => { out.push(b); i += 1; }
+        }
+    }
+    //decoded bytes may split a UTF-8 sequence, so lossy keeps the value usable instead of failing
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 #[cfg(test)]
@@ -374,6 +398,21 @@ mod tests {
         assert_eq!(path, "/backend/empty");
         let (path, _) = parse_raw_path("/locales/zh.json?v=1");
         assert_eq!(path, "/locales/zh.json");
+    }
+
+    #[test]
+    fn urlencoded_body_is_percent_decoded() {
+        //the stats login form sends password=... percent-encoded; special characters in the secret
+        //only match once decoded (regression: passwords with spaces/plus/percent never logged in)
+        let decoded = parse_form_url_encoded(b"password=p%40ss%20w%2F100%25%20%2Bx");
+        assert_eq!(decoded.get("password").map(|s| s.as_str()), Some("p@ss w/100% +x"));
+        //'+' is a space in the urlencoded alphabet
+        let plus = parse_form_url_encoded(b"a=x+y&b=100%25");
+        assert_eq!(plus.get("a").map(|s| s.as_str()), Some("x y"));
+        assert_eq!(plus.get("b").map(|s| s.as_str()), Some("100%"));
+        //a stray, invalid percent escape is preserved rather than dropping the whole field
+        assert_eq!(parse_form_url_encoded(b"k=100%%zz").get("k").map(|s| s.as_str()), Some("100%%zz"));
+        assert_eq!(percent_decode("caf%C3%A9"), "café");
     }
 
     // Minimal router stub: every request gets a 200, so the tests exercise body consumption

@@ -9,7 +9,7 @@ pub mod http_server;
 mod routes;
 pub mod request;
 pub mod response;
-pub mod cookie;
+pub mod token;
 pub mod tls;
 pub mod http_client;
 mod tcp_socket;
@@ -18,6 +18,7 @@ mod tcp_socket;
 pub enum Method {
     Get,
     Post,
+    Options,
 }
 
 pub trait MethodStr {
@@ -27,8 +28,8 @@ pub trait MethodStr {
 impl MethodStr for str {
     fn to_method(&self) -> Method {
         match self {
-            "GET" => Method::Get,
             "POST" => Method::Post,
+            "OPTIONS" => Method::Options,
             _ => Method::Get
         }
     }

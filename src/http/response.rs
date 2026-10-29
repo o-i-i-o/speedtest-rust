@@ -20,6 +20,25 @@ fn etag_matches(if_none_match : Option<&str>, etag : &str) -> bool {
     header == "*" || header.split(',').any(|candidate| candidate.trim() == etag)
 }
 
+///shared envelope for the json stats endpoints; unlike `res_200_json` it also advertises the
+///`Authorization` header so a cross-origin front-end can pass its bearer token on the preflight
+fn json_response (status : &str,content : &str) -> Response {
+    let response_header = format!(
+        "HTTP/1.1 {status}\r\n\
+        Content-Length: {}\r\n\
+        Content-Type: application/json; charset=utf-8\r\n\
+        Cache-Control: no-store, no-cache, must-revalidate, max-age=0, s-maxage=0\r\n\
+        Pragma: no-cache\r\n\
+        Access-Control-Allow-Origin: *\r\n\
+        Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
+        Access-Control-Allow-Headers: Content-Encoding, Content-Type, Authorization\r\n\r\n",
+        content.len()
+    );
+    let mut data = response_header.as_bytes().to_vec();
+    data.extend(content.as_bytes());
+    Response {data,chunk_count:0}
+}
+
 #[derive(Debug)]
 pub struct Response {
     pub data : Vec<u8>,
@@ -237,63 +256,38 @@ impl Response {
     }
 
     /*stats responses*/
-    pub fn res_temporary_redirect_cookie(cookie_data : &str,location : &str) -> Self {
+    ///json error carrying the `Authorization` hint so a cross-origin front-end can retry with a token
+    pub fn res_401_json (content : &str) -> Self {
+        json_response("401 Unauthorized",content)
+    }
+
+    pub fn res_403_json (content : &str) -> Self {
+        json_response("403 Forbidden",content)
+    }
+
+    ///CORS preflight answer for the split-out stats front-end: browsers require a 2xx that lists
+    ///`Authorization` among the allowed headers, and OPTIONS must never reach the auth/DB logic.
+    pub fn res_204_preflight () -> Self {
+        let response_header = "HTTP/1.1 204 No Content\r\n\
+            Access-Control-Allow-Origin: *\r\n\
+            Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
+            Access-Control-Allow-Headers: Content-Encoding, Content-Type, Authorization\r\n\
+            Access-Control-Max-Age: 600\r\n\
+            Vary: Access-Control-Request-Headers\r\n\r\n";
+        Response {data: response_header.as_bytes().to_vec(),chunk_count:0}
+    }
+
+    ///temporary redirect for the legacy {base_url}/stats URL, which now serves a static page elsewhere
+    pub fn res_see_other (location : &str) -> Self {
         let response_header = format!(
-            "HTTP/1.1 307 Temporary Redirect\r\n\
-            Content-Type: text/html; charset=utf-8\r\n\
-            Set-Cookie: {}\r\n\
+            "HTTP/1.1 303 See Other\r\n\
             Location: {}\r\n\
             Content-Length: 0\r\n\
-            Cache-Control: no-store, no-cache, must-revalidate, max-age=0, s-maxage=0\r\n\
-            Cache-Control: post-check=0, pre-check=0\r\n\
-            Pragma: no-cache\r\n\
-            Access-Control-Allow-Credentials: true\r\n\
-            Access-Control-Allow-Origin: *\r\n\
-            Access-Control-Allow-Headers: Content-Encoding, Content-Type, Authorization\r\n\
-            Access-Control-Allow-Methods: GET, POST, OPTIONS, HEAD\r\n\r\n",
-            cookie_data,
+            Cache-Control: no-store\r\n\
+            Access-Control-Allow-Origin: *\r\n\r\n",
             location
         );
-        let data = response_header.as_bytes().to_vec();
-        Response {data,chunk_count:0}
-    }
-
-    pub fn res_200_html(content : &str) -> Self {
-        let response_header = format!(
-            "HTTP/1.1 200 OK\r\n\
-            Content-Length: {}\r\n\
-            Content-Type: text/html; charset=utf-8\r\n\
-            Cache-Control: no-store, no-cache, must-revalidate, max-age=0, s-maxage=0\r\n\
-            Cache-Control: post-check=0, pre-check=0\r\n\
-            Pragma: no-cache\r\n\
-            Access-Control-Allow-Credentials: true\r\n\
-            Access-Control-Allow-Origin: *\r\n\
-            Access-Control-Allow-Headers: Content-Encoding, Content-Type, Authorization\r\n\
-            Access-Control-Allow-Methods: GET, POST, OPTIONS, HEAD\r\n\r\n",
-            content.len()
-        );
-        let mut data = response_header.as_bytes().to_vec();
-        data.extend(content.as_bytes());
-        Response {data,chunk_count:0}
-    }
-
-    pub fn res_403_html(content : &str) -> Self {
-        let response_header = format!(
-            "HTTP/1.1 403 Forbidden\r\n\
-            Content-Length: {}\r\n\
-            Content-Type: text/html; charset=utf-8\r\n\
-            Cache-Control: no-store, no-cache, must-revalidate, max-age=0, s-maxage=0\r\n\
-            Cache-Control: post-check=0, pre-check=0\r\n\
-            Pragma: no-cache\r\n\
-            Access-Control-Allow-Credentials: true\r\n\
-            Access-Control-Allow-Origin: *\r\n\
-            Access-Control-Allow-Headers: Content-Encoding, Content-Type, Authorization\r\n\
-            Access-Control-Allow-Methods: GET, POST, OPTIONS, HEAD\r\n\r\n",
-            content.len()
-        );
-        let mut data = response_header.as_bytes().to_vec();
-        data.extend(content.as_bytes());
-        Response {data,chunk_count:0}
+        Response {data: response_header.as_bytes().to_vec(),chunk_count:0}
     }
 
 }
@@ -311,6 +305,7 @@ mod tests {
             base_url: "test".to_string(),
             ipinfo_api_key: "".to_string(),
             stats_password: "".to_string(),
+            stats_secret: "unit-test-secret".to_string(),
             redact_ip_addresses: false,
             result_image_theme: "light".to_string(),
             assets_path: "".to_string(),
@@ -410,7 +405,8 @@ mod tests {
     fn locale_files_stay_consistent_with_the_ui() {
         //guards the copy-paste contracts of the i18n layer: every key the page asks for must be
         //translated in every locale, dictionaries must not drift apart, and manifest entries must resolve.
-        let html = embedded_text("index.html");
+        //both static pages (index + stats) share the same dictionaries, so scan them together.
+        let html = format!("{}{}", embedded_text("index.html"), embedded_text("stats.html"));
         let en: serde_json::Value = serde_json::from_str(&embedded_text("locales/en.json")).unwrap();
         let zh: serde_json::Value = serde_json::from_str(&embedded_text("locales/zh.json")).unwrap();
         let manifest: serde_json::Value = serde_json::from_str(&embedded_text("locales/manifest.json")).unwrap();
@@ -420,6 +416,12 @@ mod tests {
         used.extend(call_keys(&html, "t(\""));
         used.extend(call_keys(&html, "t('"));
         used.extend(call_keys(&html, "setMessage(\""));
+        //stats.html binds placeholders via an attribute and writes status lines imperatively
+        used.extend(attr_values(&html, "data-i18n-placeholder=\""));
+        used.extend(call_keys(&html, "setStatus(\""));
+        //disabled / not-configured banners are shown through showMessage()
+        used.extend(call_keys(&html, "showMessage(\""));
+        used.retain(|k| !k.is_empty()); //setStatus("")/setMessage("") clear the line, not a real key
         used.sort();
         used.dedup();
         assert!(used.len() > 15, "expected the UI to reference many keys, found {}", used.len());
@@ -452,6 +454,7 @@ mod tests {
         init_config();
         let cases = [
             ("/index.html",              "200 OK", "Content-Type: text/html"),
+            ("/stats.html",              "200 OK", "Content-Type: text/html"), //split-out static stats page
             ("/",                        "200 OK", "Content-Type: text/html"),
             ("",                         "200 OK", "Content-Type: text/html"), // /?lang=xx reaches fs as empty path
             ("/speedtest.js",            "200 OK", "Content-Type: text/javascript"),

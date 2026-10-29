@@ -17,8 +17,13 @@ ipinfo_api_key=""
 # set directory of speedtest web front to server load on `/`. If it is empty, default web will be returned
 assets_path="./assets" # Write without suffix separator
 
-# password for logging into statistics page, fill this to enable stats page
+# password for the statistics page. Leave empty to DISABLE stats access entirely (no data is served);
+# it is no longer treated as "public". Set a strong value to enable login.
 stats_password=""
+
+# signing key for the stats login token. Leave empty to auto-generate a random one each start
+# (tokens then expire on restart); set a fixed secret to keep logins valid across restarts.
+stats_secret=""
 
 # redact IP addresses
 redact_ip_addresses=false

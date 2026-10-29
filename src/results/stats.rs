@@ -1,189 +1,158 @@
 use std::sync::Arc;
-use handlebars::Handlebars;
 use serde_json::json;
 use tokio::sync::Mutex;
-use crate::config::{time, SERVER_CONFIG};
+use crate::config::SERVER_CONFIG;
+use crate::config::time::get_current_millis;
 use crate::database::Database;
-use crate::http::cookie::{make_cookie, make_discard_cookie, validate_cookie};
 use crate::http::request::Request;
 use crate::http::response::Response;
-use crate::results::TelemetryData;
+use crate::http::token::{extract_bearer, fixed_time_eq, make_token, validate_token};
 
-pub async fn handle_stat_page (request : &Request,database : &mut Arc<Mutex<dyn Database + Send>>) -> Response {
-    let server_config = SERVER_CONFIG.get().unwrap();
-    let redirect_path = format!("{}/stats",server_config.base_url);
-    // check database
-    if server_config.database_type == "none" {
-        return Response::res_200("Statistics are disabled")
+///access decision for the stats endpoints. Kept free of I/O and of the global config so the entire
+///branch matrix can be unit tested without a database or a running server.
+#[derive(PartialEq, Debug)]
+pub enum StatsAccess {
+    Disabled,      //no database: telemetry is off
+    NotConfigured, //database on but no stats_password set -> nothing is served (restores the old SSR contract)
+    Unauthorized,  //password set, caller has no valid token
+    Authorized,    //password set and a valid token presented, or handled by the caller
+}
+
+///empty password used to mean "public"; that leaked every result to any anonymous request, so it
+///now means "not configured". Public visibility would need an explicit opt-in, never a default.
+pub fn gate_stats (database_none : bool, password_empty : bool, token_valid : bool) -> StatsAccess {
+    if database_none {
+        StatsAccess::Disabled
+    } else if password_empty {
+        StatsAccess::NotConfigured
+    } else if token_valid {
+        StatsAccess::Authorized
+    } else {
+        StatsAccess::Unauthorized
     }
-    // check stats password
-    let no_password = server_config.stats_password.is_empty();
-    let mut logged_in = false;
-    let mut password_wrong = false;
-    let mut telemetry_list : Vec<TelemetryData> = Vec::new();
+}
 
-    let mut db = database.lock().await;
+///constant-time compare over the (already percent-decoded) form field, so online guessing of the
+///stats password does not learn the matching prefix length from early-exit timing.
+pub fn password_matches (input : Option<&String>, expected : &str) -> bool {
+    let Some(input) = input else {
+        return false;
+    };
+    fixed_time_eq(input.as_bytes(), expected.as_bytes())
+}
 
-    //check login
-    if !no_password {
+fn presented_token_is_valid (request : &Request, secret : &str) -> bool {
+    extract_bearer(request.headers.get("Authorization"))
+        .is_some_and(|token| validate_token(secret, token, get_current_millis()))
+}
 
-        let op = request.query_params.get("op");
-        let cookie_data = request.headers.get("Cookie");
+///`POST {base_url}/stats/login`
+///Body is the shared secret sent as `application/x-www-form-urlencoded` (`password=...`), the one
+///content type the request body parser turns into `form_data`. A valid password yields a bearer
+///token signed with `stats_secret` and carrying an issue time; the client replays it in
+///`Authorization: Bearer <token>`. No token is minted while statistics are disabled or unconfigured.
+pub async fn handle_stats_login (request : &Request) -> Response {
+    let server_config = SERVER_CONFIG.get().unwrap();
+    if server_config.database_type == "none" {
+        return Response::res_200_json(&json!({ "statistics": false }).to_string());
+    }
+    if server_config.stats_password.is_empty() {
+        return Response::res_200_json(&json!({ "statistics": true, "configured": false }).to_string());
+    }
+    if password_matches(request.form_data.get("password"), &server_config.stats_password) {
+        let token = make_token(&server_config.stats_secret, get_current_millis());
+        Response::res_200_json(&json!({ "token": token }).to_string())
+    } else {
+        Response::res_403_json(&json!({ "error": "wrong password" }).to_string())
+    }
+}
 
-        if validate_cookie(cookie_data) {
-            if op == Some(&"logout".to_string()) {
-                let cookie_discard = make_discard_cookie(&redirect_path);
-                return Response::res_temporary_redirect_cookie(&cookie_discard,&redirect_path)
-            } else {
-                logged_in = true;
-                let def = "L100".to_string();
-                let id = request.query_params.get("id").unwrap_or(&def).as_str();
-                match id {
-                    "L100" => {
-                        let data = db.fetch_last_100().await;
-                        match data {
-                            Ok(mut data) => {
-                                telemetry_list.append(&mut data);
-                                drop(data);
-                            }
-                            Err(_) => {
-                                return Response::res_500()
-                            }
-                        }
-                    }
-                    _ => {
-                        let data = db.fetch_by_uuid(id).await;
-                        match data {
-                            Ok(data) => {
-                                if let Some(data) = data {
-                                    telemetry_list.push(data)
-                                }
-                            }
-                            Err(_) => {
-                                return Response::res_500()
-                            }
-                        }
+///`GET {base_url}/stats/data[?id=<uuid>]`
+///Returns the last 100 results, or the single result matching `id`. Timestamps are handed back as
+///raw epoch milliseconds; the front-end formats them.
+pub async fn handle_stats_data (request : &Request,database : &mut Arc<Mutex<dyn Database + Send>>) -> Response {
+    let server_config = SERVER_CONFIG.get().unwrap();
+    //early states short-circuit before any token parsing: unauthenticated attackers must not be
+    //able to reach the signature/TTL logic (let alone the database) while stats are off. The
+    //Disabled/NotConfigured gates below stay for the full branch matrix and the unit tests.
+    if server_config.database_type == "none" {
+        return Response::res_200_json(&json!({ "statistics": false }).to_string());
+    }
+    if server_config.stats_password.is_empty() {
+        return Response::res_200_json(&json!({ "statistics": true, "configured": false }).to_string());
+    }
+    let access = gate_stats(false, false, presented_token_is_valid(request,&server_config.stats_secret));
+    match access {
+        StatsAccess::Disabled => {
+            Response::res_200_json(&json!({ "statistics": false }).to_string())
+        }
+        StatsAccess::NotConfigured => {
+            Response::res_200_json(&json!({ "statistics": true, "configured": false }).to_string())
+        }
+        StatsAccess::Unauthorized => {
+            Response::res_401_json(&json!({ "error": "authentication required" }).to_string())
+        }
+        StatsAccess::Authorized => {
+            //only authenticated requests reach the database
+            let mut db = database.lock().await;
+            //normalize the id: an absent or empty id, and the legacy "L100" sentinel, all mean last-100
+            let id = request.query_params.get("id").map(|s| s.as_str()).unwrap_or("L100");
+            let telemetry_list = if id == "L100" || id.is_empty() {
+                match db.fetch_last_100().await {
+                    Ok(data) => data,
+                    Err(_) => {
+                        return Response::res_500();
                     }
                 }
-            }
-        } else if op == Some(&"login".to_string()) {
-            let input_pass = request.form_data.get("password");
-            if input_pass == Some(&server_config.stats_password) {
-                let cookie_data = make_cookie(&redirect_path);
-                return Response::res_temporary_redirect_cookie(&cookie_data,&redirect_path)
             } else {
-                password_wrong = true;
-            }
-        }
-    }
-
-    let mut handlebars = Handlebars::new();
-    handlebars.register_helper("formatTimestamp",Box::new(time::convert_time_local_stats));
-    handlebars.register_template_string("stats_page",HTML_TEMPLATE).unwrap();
-    let data = json!({
-        "no_password": no_password,
-        "logged_in": logged_in,
-        "telemetry_list" : telemetry_list
-    });
-
-    let rendered_html = handlebars.render("stats_page",&data);
-    match rendered_html {
-        Ok(rendered_html) => {
-            if password_wrong {
-                Response::res_403_html(&rendered_html)
-            } else {
-                Response::res_200_html(&rendered_html)
-            }
-        }
-        Err(_) => {
-            Response::res_500()
+                match db.fetch_by_uuid(id).await {
+                    Ok(Some(data)) => vec![data],
+                    Ok(None) => Vec::new(),
+                    Err(_) => {
+                        return Response::res_500();
+                    }
+                }
+            };
+            Response::res_200_json(&json!({ "authenticated": true, "results": telemetry_list }).to_string())
         }
     }
 }
 
-const HTML_TEMPLATE : &str = r#"
-<!DOCTYPE html>
-<html>
-<head>
-<title>LibreSpeed - Stats</title>
-<style type="text/css">
-	html,body{
-		margin:0;
-		padding:0;
-		border:none;
-		width:100%; min-height:100%;
-	}
-	html{
-		background-color: hsl(198,72%,35%);
-		font-family: "Segoe UI","Roboto",sans-serif;
-	}
-	body{
-		background-color:#FFFFFF;
-		box-sizing:border-box;
-		width:100%;
-		max-width:70em;
-		margin:4em auto;
-		box-shadow:0 1em 6em #00000080;
-		padding:1em 1em 4em 1em;
-		border-radius:0.4em;
-	}
-	h1,h2,h3,h4,h5,h6{
-		font-weight:300;
-		margin-bottom: 0.1em;
-	}
-	h1{
-		text-align:center;
-	}
-	table{
-		margin:2em 0;
-		width:100%;
-	}
-	table, tr, th, td {
-		border: 1px solid #AAAAAA;
-	}
-	th {
-		width: 6em;
-	}
-	td {
-		word-break: break-all;
-	}
-</style>
-</head>
-<body>
-<h1>LibreSpeed - Stats</h1>
-{{#if no_password}}
-		Please set stats_password in configs.toml to enable access.
-{{else if logged_in}}
-	<form action="stats" method="GET"><input type="hidden" name="op" value="logout" /><input type="submit" value="Logout" /></form>
-	<form action="stats" method="GET">
-		<h3>Search test results</h6>
-		<input type="hidden" name="op" value="id" />
-		<input type="text" name="id" id="id" placeholder="Test ID" value=""/>
-		<input type="submit" value="Find" />
-		<input type="submit" onclick="document.getElementById('id').value='L100'" value="Show last 100 tests" />
-	</form>
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    {{#each telemetry_list}}
-	<table>
-		<tr><th>Test ID</th><td>{{ this.uuid }}</td></tr>
-		<tr><th>Date and time</th><td>{{ formatTimestamp this.timestamp }}</td></tr>
-		<tr><th>IP and ISP Info</th><td>{{ this.ip_address }}<br/>{{ this.isp_info }}</td></tr>
-		<tr><th>User agent and locale</th><td>{{ this.user_agent }}<br/>{{ this.lang }}</td></tr>
-		<tr><th>Download speed</th><td>{{ this.download }}</td></tr>
-		<tr><th>Upload speed</th><td>{{ this.upload }}</td></tr>
-		<tr><th>Ping</th><td>{{ this.ping }}</td></tr>
-		<tr><th>Jitter</th><td>{{ this.jitter }}</td></tr>
-		<tr><th>Log</th><td>{{ this.log }}</td></tr>
-		<tr><th>Extra info</th><td>{{ this.extra }}</td></tr>
-	</table>
-	{{/each}}
-{{else}}
-	<form action="stats?op=login" method="POST">
-		<h3>Login</h3>
-		<input type="password" name="password" placeholder="Password" value=""/>
-		<input type="submit" value="Login" />
-	</form>
-{{/if}}
-</body>
-</html>
-"#;
+    #[test]
+    fn gate_prefers_disabled_over_everything() {
+        //no database wins even if a password is set and a token looks valid
+        assert_eq!(gate_stats(true, false, true), StatsAccess::Disabled);
+        assert_eq!(gate_stats(true, true, false), StatsAccess::Disabled);
+    }
+
+    #[test]
+    fn empty_password_is_not_public_anymore() {
+        //regression guard: with a database but no password nothing must be served
+        assert_eq!(gate_stats(false, true, false), StatsAccess::NotConfigured);
+        //a forged/valid token does not bypass the "not configured" state either
+        assert_eq!(gate_stats(false, true, true), StatsAccess::NotConfigured);
+    }
+
+    #[test]
+    fn protected_stats_require_a_valid_token() {
+        assert_eq!(gate_stats(false, false, false), StatsAccess::Unauthorized);
+        assert_eq!(gate_stats(false, false, true), StatsAccess::Authorized);
+    }
+
+    #[test]
+    fn password_matches_is_exact_and_absent_aware() {
+        let ok = Some(String::from("hunter2"));
+        assert!(password_matches(ok.as_ref(), "hunter2"));
+        assert!(!password_matches(Some(&String::from("hunter3")), "hunter2"));
+        //a longer shared prefix must not match a shorter input or leak via the empty case
+        assert!(!password_matches(Some(&String::from("hunt")), "hunter2"));
+        assert!(!password_matches(None, "hunter2"));
+        //an empty expected password would already have been routed to NotConfigured, but keep the
+        //helper honest: empty input must never match a non-empty secret
+        assert!(!password_matches(Some(&String::new()), "hunter2"));
+    }
+}

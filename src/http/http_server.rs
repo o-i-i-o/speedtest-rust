@@ -13,7 +13,7 @@ use crate::http::routes::*;
 use crate::http::tcp_socket::TcpSocket;
 use crate::http::tls::setup_tls_acceptor;
 use crate::ip::ip_info::IPInfo;
-use crate::results::stats::handle_stat_page;
+use crate::results::stats::{handle_stats_data, handle_stats_login};
 
 pub struct HttpServer {
     pub tcp_socket: TcpSocket,
@@ -105,6 +105,11 @@ impl HttpServer {
             let mut database = database.clone();
 
             Box::pin(async move {
+                //answer the cross-origin preflight for the separated stats front-end before routing,
+                //so OPTIONS never runs the auth check or a database query
+                if matches!(request.method,Method::Options) {
+                    return Response::res_204_preflight();
+                }
                 if let Some(route) = ROUTES.get().unwrap().get(request.path.trim()) {
                     match *route {
                         "empty" => {
@@ -127,7 +132,14 @@ impl HttpServer {
                             telemetry_record_route(&mut database, &request).await
                         }
                         "stats" => {
-                            handle_stat_page(&request,&mut database).await
+                            //legacy endpoint kept alive: point browsers at the static page
+                            Response::res_see_other("/stats.html")
+                        }
+                        "stats/login" => {
+                            handle_stats_login(&request).await
+                        }
+                        "stats/data" => {
+                            handle_stats_data(&request,&mut database).await
                         }
                         _ => {
                             Response::res_404()
