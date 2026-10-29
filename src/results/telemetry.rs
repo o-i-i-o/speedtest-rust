@@ -120,9 +120,11 @@ pub fn draw_result(data: &TelemetryData) -> Vec<u8> {
     let l_mbps = "Mbps";
     let l_watermark = "LibreSpeed";
 
-    //text sizes. every value string is client-supplied telemetry, so each dimension is clamped:
-    //`width_quarter - huge/2` on u32 would underflow, panicking under debug overflow-checks
-    //and misplacing text under release. saturating casts keep draw_result infallible
+    //text sizes. every value string is client-supplied telemetry, so each dimension is clamped to
+    //bound the render. The clamp alone is NOT enough to keep the centering arithmetic safe: a
+    //quarter is only ~125 px, so `width_quarter - value_width/2` still underflows for any long
+    //value. The x assignments below therefore use saturating_sub, which is what actually keeps
+    //draw_result infallible (no debug-overflow panic, no release wrap into a bogus huge offset)
     let sz = |(w, h): (u32, u32)| (w.min(4000), h.min(4000));
     let ping_text_size = sz(cal_text_size(font, l_ping, ping_jitter_name_scale));
     let ping_value_text_size = sz(cal_text_size(font, &data.ping, ping_jitter_value_scale));
@@ -159,7 +161,10 @@ pub fn draw_result(data: &TelemetryData) -> Vec<u8> {
         l_ping,
     ); // ping label
 
-    x = width_quarter - (ping_value_text_size.0 / 2) + h_padding - (ms_text_size.0 / 2); // ping value
+    x = width_quarter
+        .saturating_sub(ping_value_text_size.0 / 2)
+        .saturating_add(h_padding)
+        .saturating_sub(ms_text_size.0 / 2); // ping value
     y = ping_text_size.1 + (v_padding * 2); // ping value
     draw_text_mut(
         &mut img,
@@ -197,7 +202,10 @@ pub fn draw_result(data: &TelemetryData) -> Vec<u8> {
         l_jitter,
     ); // jitter value
 
-    x = width_3_quarter - (jitter_value_text_size.0 / 2) - h_padding - (ms_text_size.0 / 2); // jitter value
+    x = width_3_quarter
+        .saturating_sub(jitter_value_text_size.0 / 2)
+        .saturating_sub(h_padding)
+        .saturating_sub(ms_text_size.0 / 2); // jitter value
     y = jitter_text_size.1 + (v_padding * 2); // jitter value
     draw_text_mut(
         &mut img,
@@ -236,7 +244,9 @@ pub fn draw_result(data: &TelemetryData) -> Vec<u8> {
         l_dl,
     ); // download label
 
-    x = width_quarter - (download_value_text_size.0 / 2) + h_padding; // download value
+    x = width_quarter
+        .saturating_sub(download_value_text_size.0 / 2)
+        .saturating_add(h_padding); // download value
     y = ping_text_size.1 + ping_value_text_size.1 + download_text_size.1 + (v_padding * 7); // download value
     draw_text_mut(
         &mut img,
@@ -278,7 +288,9 @@ pub fn draw_result(data: &TelemetryData) -> Vec<u8> {
         l_ul,
     ); // upload label
 
-    x = width_3_quarter - (upload_value_text_size.0 / 2) - h_padding; // upload value
+    x = width_3_quarter
+        .saturating_sub(upload_value_text_size.0 / 2)
+        .saturating_sub(h_padding); // upload value
     y = jitter_text_size.1 + jitter_value_text_size.1 + upload_text_size.1 + (v_padding * 7); // upload value
     draw_text_mut(
         &mut img,

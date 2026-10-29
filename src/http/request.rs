@@ -52,12 +52,46 @@ async fn read_line<R>(buf_reader: &mut BufReader<R>, limit: Duration, max_len: u
 where
     R: AsyncReadExt + Unpin,
 {
-    match timeout(limit, buf_reader.lines().next_line()).await {
-        Ok(Ok(Some(line))) if line.len() <= max_len => LineRead::Value(line),
-        Ok(Ok(Some(_))) => LineRead::TooLarge,
-        //EOF, an I/O error or a decode failure all end the connection the same way
-        Ok(_) => LineRead::Empty,
-        Err(_) => LineRead::Empty,
+    //bounded, incremental line read. The previous `lines().next_line()` buffered the *whole* line
+    //and only checked its length afterwards, so a client that never sends a newline could grow
+    //this buffer without limit inside the timeout window. Here we copy in `fill_buf` chunks and
+    //stop the instant `max_len` is crossed, so neither a slow dribble nor a newline-less flood is
+    //unbounded; each individual `fill_buf` is timed, so a stalled socket ends the connection.
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        let filled = match timeout(limit, buf_reader.fill_buf()).await {
+            Ok(Ok(b)) => b,
+            //I/O error or a timeout both end the connection the same way
+            Ok(Err(_)) | Err(_) => return LineRead::Empty,
+        };
+        if filled.is_empty() {
+            //EOF: a final line without a trailing newline is still usable, nothing at all is Empty
+            if buf.is_empty() {
+                return LineRead::Empty;
+            }
+            return LineRead::Value(String::from_utf8_lossy(&buf).into_owned());
+        }
+        match filled.iter().position(|&b| b == b'\n') {
+            Some(idx) => {
+                buf.extend_from_slice(&filled[..idx]);
+                buf_reader.consume(idx + 1);
+                let mut line = String::from_utf8_lossy(&buf).into_owned();
+                //drop the single CR of a CRLF terminator, matching the old `lines()` behavior
+                if line.ends_with('\r') {
+                    line.pop();
+                }
+                return LineRead::Value(line);
+            }
+            None => {
+                let len = filled.len();
+                buf.extend_from_slice(filled);
+                buf_reader.consume(len);
+                if buf.len() > max_len {
+                    //no newline before the cap: oversized/malformed line, the caller closes
+                    return LineRead::TooLarge;
+                }
+            }
+        }
     }
 }
 
@@ -211,15 +245,14 @@ pub async fn handle_socket<R, W, F>(
         //honor `Expect: 100-continue` (RFC 9110 §10.1.1) by sending the interim 100 response
         //*before* reading the body. Without it, clients that use Expect (curl and many HTTP
         //libraries) wait out their continue-timeout (~1s for curl) on every upload request.
-        if let Some(expect) = parsed_headers.get("Expect") {
-            if expect.eq_ignore_ascii_case("100-continue")
-                && buf_writer
-                    .write_all(b"HTTP/1.1 100 Continue\r\n\r\n")
-                    .await
-                    .is_ok()
-            {
-                let _ = buf_writer.flush().await;
-            }
+        if let Some(expect) = parsed_headers.get("Expect")
+            && expect.eq_ignore_ascii_case("100-continue")
+            && buf_writer
+                .write_all(b"HTTP/1.1 100 Continue\r\n\r\n")
+                .await
+                .is_ok()
+        {
+            let _ = buf_writer.flush().await;
         }
         //read body content
         let body_form_data = {
@@ -334,8 +367,19 @@ where
                 if let (Some(header_key), Some(header_val)) =
                     (header_parts.next(), header_parts.next())
                 {
-                    headers_out
-                        .insert(header_key.trim().to_string(), header_val.trim().to_string());
+                    let header_key = header_key.trim();
+                    let header_val = header_val.trim().to_string();
+                    //a second, differing Content-Length must not silently win: last-write would let
+                    //`CL: 5 / CL: 10` smuggle a body. RFC 9112 treats conflicting values as invalid,
+                    //so collapse to `5, 10`, which `check_body_limit` then rejects as unparsable
+                    if header_key.eq_ignore_ascii_case("Content-Length")
+                        && let Some(prev) = headers_out.get(header_key)
+                    {
+                        let joined = format!("{prev}, {header_val}");
+                        headers_out.insert(header_key.to_string(), joined);
+                        continue 'header_loop;
+                    }
+                    headers_out.insert(header_key.to_string(), header_val);
                 }
             }
             //oversized header or EOF/timeout: stop parsing; the request is malformed at that point
@@ -369,6 +413,12 @@ where
 ///- an oversized body must never be allocated or drained; form endpoints only need kilobytes,
 ///  uploads (Fixed) are capped by MAX_BODY_SIZE_BYTES, chunked streams by MAX_CHUNKED_BODY_BYTES
 fn check_body_limit(headers: &CIHashMap<String>) -> Option<&'static str> {
+    //a request carrying both Content-Length and Transfer-Encoding is invalid per RFC 9112 and the
+    //classic CL.TE request-smuggling vector: a front-end may frame the body as chunked while this
+    //server would honour Content-Length and read a different number of bytes. Reject outright
+    if headers.get("Transfer-Encoding").is_some() && headers.get("Content-Length").is_some() {
+        return Some("400 Bad Request");
+    }
     let content_len_raw = headers.get("Content-Length").map(|s| s.as_str());
     let body_type = headers.get("Content-Type").map(|content_type| {
         if content_type.starts_with("multipart/form-data;") {
@@ -423,11 +473,15 @@ fn check_has_body(headers: &CIHashMap<String>) -> (Option<BodyType>, Option<u64>
             return (Some(body_type), Some(content_len));
         };
     };
-    //check chunked body
-    if let Some(transfer_encoding) = headers.get("Transfer-Encoding") {
-        if transfer_encoding == "chunked" {
-            return (Some(BodyType::Chunked), Some(0));
-        }
+    //check chunked body: `Transfer-Encoding` is a comma list and its tokens are case-insensitive
+    //per RFC 9110, so `Chunked`/`chunked, gzip` must still be framed as chunked - the old exact
+    //string compare skipped the body and desynchronized keep-alive framing on those clients
+    if let Some(transfer_encoding) = headers.get("Transfer-Encoding")
+        && transfer_encoding
+            .split(',')
+            .any(|token| token.trim().eq_ignore_ascii_case("chunked"))
+    {
+        return (Some(BodyType::Chunked), Some(0));
     }
     (None, None)
 }
@@ -544,11 +598,22 @@ fn parse_form_data(boundary: &str, body: &[u8]) -> HashMap<String, String> {
                 continue;
             };
             let value = value.replace("\r\n", "");
-            //parse key from the Content-Disposition header line
-            let mut split_disposition = headers.splitn(2, ';');
-            if let Some(name_part) = split_disposition.nth(1) {
-                if let Some(key) = name_part.split_once('=').map(|x| x.1) {
-                    let key = key.replace('"', "");
+            //the field name lives only on the `Content-Disposition` line; a MIME part may carry
+            //further headers (Content-Type for file uploads, ...) whose trailing lines or `name=`
+            //would otherwise bleed into the key, so parse only the first line, only the segment
+            //immediately after the first ';', and stop at the next ';'
+            let disposition_line = headers.split('\n').next().unwrap_or("");
+            if let Some(name_param) = disposition_line.split(';').nth(1)
+                && let Some((_, raw_key)) = name_param.split_once('=')
+            {
+                let key = raw_key
+                    .split(';')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .trim_matches('"')
+                    .to_string();
+                if !key.is_empty() {
                     form_data.insert(key, value);
                 }
             }
@@ -713,10 +778,17 @@ mod tests {
         //regression: the old splitn(2,"\r\n") parser treated the first header line as the whole
         //header block, truncating every value at its first CRLF and emptying the dictionary
         let boundary = String::from("--BOUNDARY");
-        let body = b"--BOUNDARY\r\nContent-Disposition: form-data; name=\"log\"\r\n\r\nline1\r\nline2\r\n--BOUNDARY\r\nContent-Disposition: form-data; name=\"dl\"\r\n\r\n42\r\n--BOUNDARY--\r\n";
+        let body = b"--BOUNDARY\r\nContent-Disposition: form-data; name=\"log\"\r\n\r\nline1\r\nline2\r\n--BOUNDARY\r\nContent-Disposition: form-data; name=\"dl\"\r\n\r\n42\r\n--BOUNDARY\r\nContent-Disposition: form-data; name=\"file\"\r\nContent-Type: text/plain\r\n\r\nhello\r\n--BOUNDARY--\r\n";
         let parsed = parse_form_data(&boundary, body);
         assert_eq!(parsed.get("log").map(|s| s.as_str()), Some("line1line2"));
         assert_eq!(parsed.get("dl").map(|s| s.as_str()), Some("42"));
+        //regression L2-2: a part carrying an extra Content-Type header must still be keyed by
+        //"file" - the old code swallowed the trailing header line into the key
+        assert_eq!(parsed.get("file").map(|s| s.as_str()), Some("hello"));
+        assert!(
+            !parsed.keys().any(|k| k.contains("Content-Type")),
+            "a MIME part's secondary header must not leak into any field name"
+        );
         //a quoted boundary parameter is legal and used to produce a wrong delimiter
         let ct = String::from("multipart/form-data; boundary=\"XYZ\"");
         assert_eq!(get_content_boundary(&ct).as_deref(), Some("--XYZ"));
@@ -875,6 +947,64 @@ mod tests {
         assert!(
             String::from_utf8_lossy(&out).contains("413"),
             "chunked streams past the cap must be rejected, got: {out:?}"
+        );
+    }
+
+    #[test]
+    fn chunked_detection_is_case_insensitive() {
+        //regression L2-1: `Transfer-Encoding: Chunked` (or a token list) used to be missed by the
+        //exact "chunked" compare, so the body was never consumed and keep-alive framing desynced
+        let mut h = CIHashMap::new();
+        h.insert("Transfer-Encoding".to_string(), "Chunked".to_string());
+        assert!(matches!(check_has_body(&h).0, Some(BodyType::Chunked)));
+        let mut list = CIHashMap::new();
+        list.insert("Transfer-Encoding".to_string(), "gzip, chunked".to_string());
+        assert!(matches!(check_has_body(&list).0, Some(BodyType::Chunked)));
+    }
+
+    #[test]
+    fn content_length_with_transfer_encoding_is_rejected() {
+        //regression M2-2: a request that frames the body two ways at once is a CL.TE smuggling
+        //vector; it is invalid per RFC 9112 and must be refused before any body read
+        let mut both = CIHashMap::new();
+        both.insert("Content-Length".to_string(), "10".to_string());
+        both.insert("Transfer-Encoding".to_string(), "chunked".to_string());
+        assert_eq!(check_body_limit(&both), Some("400 Bad Request"));
+        //either framing on its own is legitimate
+        let mut only_te = CIHashMap::new();
+        only_te.insert("Transfer-Encoding".to_string(), "chunked".to_string());
+        assert_eq!(check_body_limit(&only_te), None);
+        let mut only_cl = CIHashMap::new();
+        only_cl.insert("Content-Length".to_string(), "10".to_string());
+        assert_eq!(check_body_limit(&only_cl), None);
+    }
+
+    #[tokio::test]
+    async fn header_parser_flags_conflicting_content_length() {
+        //regression L2-3: duplicate Content-Length must not silently last-win; the parser folds
+        //conflicting values into `5, 10`, which check_body_limit then refuses as unparsable
+        let raw = b"Content-Length: 5\r\nContent-Length: 10\r\n\r\n".to_vec();
+        let mut reader = BufReader::new(Cursor::new(raw));
+        let headers = header_parser(&mut reader).await;
+        assert_eq!(
+            headers.get("Content-Length").map(|s| s.as_str()),
+            Some("5, 10")
+        );
+        assert_eq!(check_body_limit(&headers), Some("400 Bad Request"));
+    }
+
+    #[tokio::test]
+    async fn oversized_line_stops_without_buffering_the_whole_flood() {
+        //regression M2-1: read_line must bail the instant MAX_LINE_LEN is crossed instead of
+        //buffering a newline-less flood before checking - a Cursor proves it returns TooLarge
+        //without consuming/retaining all 500 KB
+        let mut huge = vec![b'a'; 500_000];
+        huge.push(b'\n');
+        let mut reader = BufReader::new(Cursor::new(huge));
+        let got = read_line(&mut reader, Duration::from_secs(5), MAX_LINE_LEN).await;
+        assert!(
+            matches!(got, LineRead::TooLarge),
+            "expected TooLarge, but the flood was buffered instead"
         );
     }
 }

@@ -26,10 +26,11 @@ pub fn convert_time_utc(time: i64) -> String {
 }
 
 pub fn get_current_millis() -> i64 {
-    let start = SystemTime::now();
-    let since_the_epoch = start
-        .duration_since(UNIX_EPOCH)
-        .expect("Time went backwards");
+    //a system clock set before the epoch is nonsensical but must not abort the process (panic=abort
+    //in release): treat it as time 0, which the token TTL/skew checks reject just as safely
+    let Ok(since_the_epoch) = SystemTime::now().duration_since(UNIX_EPOCH) else {
+        return 0;
+    };
     //checked math: a wildly wrong system clock must not wrap the i64 conversion
     let millis = since_the_epoch.as_secs().saturating_mul(1000)
         + since_the_epoch.subsec_nanos() as u64 / 1_000_000;

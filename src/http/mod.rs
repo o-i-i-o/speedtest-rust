@@ -124,18 +124,19 @@ fn generate_server_endpoint() -> Vec<u8> {
 }
 
 pub fn get_chunk_count(query_params: &HashMap<String, String>) -> i32 {
-    let mut chunks = 4;
-    if let Some(ck_size) = query_params.get("ckSize") {
-        if let Ok(parsed_ck_size) = ck_size.parse::<i32>() {
-            if parsed_ck_size > 1024 {
-                chunks = 1024
-            } else {
-                chunks = parsed_ck_size
-            }
-        }
+    //`ckSize` is a client-supplied query parameter on the always-open /garbage download route.
+    //the old code only capped the upper end (`> 1024`) and let any other value through, then did
+    //`chunks *= 2`: a negative input (e.g. -1073741825) overflows that doubling, which in the
+    //release profile (overflow-checks off) wraps into a ~2.1-billion positive count and in debug
+    //panics. handle_socket would then loop that many times writing a 512 KB garbage chunk -
+    //a one-line, pre-auth CPU/bandwidth DoS. clamp both ends and double without ever overflowing
+    let mut chunks = 4i32;
+    if let Some(ck_size) = query_params.get("ckSize")
+        && let Ok(parsed_ck_size) = ck_size.parse::<i32>()
+    {
+        chunks = parsed_ck_size.clamp(1, 1024);
     }
-    chunks *= 2;
-    chunks
+    chunks.saturating_mul(2)
 }
 
 #[macro_export]
@@ -144,4 +145,50 @@ macro_rules! make_route {
         let base_url = SERVER_CONFIG.get().unwrap().base_url.clone();
         format!("{}{}", base_url, $a)
     }};
+}
+
+#[cfg(test)]
+mod tests {
+    use super::get_chunk_count;
+    use std::collections::HashMap;
+
+    fn ck(raw: &str) -> HashMap<String, String> {
+        let mut m = HashMap::new();
+        m.insert("ckSize".to_string(), raw.to_string());
+        m
+    }
+
+    #[test]
+    fn chunk_count_is_always_a_bounded_loop_bound() {
+        //no param / non-numeric falls back to the 4 -> 8 default
+        assert_eq!(get_chunk_count(&HashMap::new()), 8);
+        assert_eq!(get_chunk_count(&ck("banana")), 8);
+        //normal in-range value doubles
+        assert_eq!(get_chunk_count(&ck("10")), 20);
+        //oversize clamps to 1024 -> 2048 (the biggest legit download)
+        assert_eq!(get_chunk_count(&ck("100000")), 2048);
+        //regression H2-1: negative / extreme inputs used to overflow `chunks *= 2`, wrapping to a
+        //huge positive count in release (billions of garbage writes) or panicking in debug
+        assert_eq!(get_chunk_count(&ck("-1073741825")), 2);
+        assert_eq!(get_chunk_count(&ck("-1")), 2);
+        assert_eq!(get_chunk_count(&ck(&i32::MIN.to_string())), 2);
+        assert_eq!(get_chunk_count(&ck(&i32::MAX.to_string())), 2048);
+        //whatever the client sends, the returned count stays inside a sane, non-negative band
+        for raw in [
+            "-2147483648",
+            "-1073741825",
+            "0",
+            "1",
+            "1024",
+            "1025",
+            "2000000000",
+            "99999999999999999999",
+        ] {
+            let c = get_chunk_count(&ck(raw));
+            assert!(
+                (2..=2048).contains(&c),
+                "ckSize={raw} produced out-of-bound chunk count {c}"
+            );
+        }
+    }
 }

@@ -44,8 +44,8 @@ pub fn password_authorizes(input: Option<&String>, expected: &str) -> bool {
 /*login rate limiting: the constant-time compare stops per-request timing leaks but does nothing
 against throughput - an attacker can still try billions of passwords. Fixed window per address,
 in-process (single source of truth on the current_thread default runtime; multi-process
-setups should rate limit at the proxy). Only failed attempts count, so a locked-out attacker
-never locks out the real admin by spoofing their address.*/
+setups should rate limit at the proxy). Every attempt reserves a slot atomically so a burst of
+concurrent requests cannot slip past the budget before the counters update.*/
 const LOGIN_WINDOW_MILLIS: i64 = 60 * 1000;
 const LOGIN_MAX_ATTEMPTS: u32 = 10;
 ///hard ceiling on tracked addresses; opportunistic expired-window purge keeps the map from
@@ -54,33 +54,30 @@ const LOGIN_MAX_ATTEMPTS: u32 = 10;
 const LOGIN_TRACKED_MAX: usize = 4096;
 static LOGIN_ATTEMPTS: OnceLock<Mutex<HashMap<String, (u32, i64)>>> = OnceLock::new();
 
-///true when `addr` may still attempt a login at `now_millis` (read-only: the budget is spent by
-///`record_login_failure`, so a wrong-password flood can never lock out the real administrator
-///through successful requests)
-fn login_attempt_allowed(addr: &str, now_millis: i64) -> bool {
+///reserve one login attempt for `addr` in the current fixed window, returning false once the
+///budget is spent. Check and increment happen under a SINGLE lock acquisition: the previous
+///read-only `login_attempt_allowed` plus a separate `record_login_failure` was a check-then-act
+///race that let a burst of concurrent requests all pass before any counter moved, defeating the
+///limiter. Each attempt (even a successful one) reserves a slot, but a real admin uses far fewer
+///than LOGIN_MAX_ATTEMPTS per minute; and without trust_proxy the key is the socket address, so
+///one attacker's flood only drains their own bucket and can never lock out a different client.
+fn register_login_attempt(addr: &str, now_millis: i64) -> bool {
     let table = LOGIN_ATTEMPTS.get_or_init(|| Mutex::new(HashMap::new()));
     //a poisoned lock (a panic elsewhere while holding it) must not skip the limit: fail closed
     let mut table = table.lock().unwrap_or_else(|e| e.into_inner());
     if table.len() > LOGIN_TRACKED_MAX {
         table.retain(|_, (_, start)| now_millis - *start <= LOGIN_WINDOW_MILLIS);
     }
-    match table.get(addr) {
-        Some((count, start)) => {
-            now_millis - *start > LOGIN_WINDOW_MILLIS || *count < LOGIN_MAX_ATTEMPTS
-        }
-        None => true,
-    }
-}
-
-///counts one failed login for `addr`; starts a fresh window when the old one has lapsed
-fn record_login_failure(addr: &str, now_millis: i64) {
-    let table = LOGIN_ATTEMPTS.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut table = table.lock().unwrap_or_else(|e| e.into_inner());
     let entry = table.entry(addr.to_string()).or_insert((0, now_millis));
+    //the old window has lapsed: start a fresh one and let this attempt be its first
     if now_millis - entry.1 > LOGIN_WINDOW_MILLIS {
         *entry = (0, now_millis);
     }
+    if entry.0 >= LOGIN_MAX_ATTEMPTS {
+        return false;
+    }
     entry.0 += 1;
+    true
 }
 
 fn password_matches(input: Option<&String>, expected: &str) -> bool {
@@ -100,7 +97,7 @@ fn presented_token_is_valid(request: &Request, secret: &str) -> bool {
 ///content type the request body parser turns into `form_data`. A valid password yields a bearer
 ///token signed with `stats_secret` and carrying an issue time; the client replays it in
 ///`Authorization: Bearer <token>`. No token is minted while statistics are disabled or unconfigured.
-///Failed attempts are rate limited per address (429 once the window budget is spent).
+///Every attempt is rate limited per address (429 once the window budget is spent).
 pub async fn handle_stats_login(request: &Request) -> Response {
     let server_config = SERVER_CONFIG.get().unwrap();
     if server_config.database_type == "none" {
@@ -111,9 +108,9 @@ pub async fn handle_stats_login(request: &Request) -> Response {
             &json!({ "statistics": true, "configured": false }).to_string(),
         );
     }
-    //wrong-password responses all cost the same and the compare is constant-time, so the limiter
-    //is consulted before the compare and never reveals whether the password was close
-    if !login_attempt_allowed(&request.remote_addr, get_current_millis()) {
+    //the limiter reserves a slot for every attempt before the compare, so a wrong-password flood
+    //cannot out-parallel the budget; the compare is constant-time and never reveals proximity
+    if !register_login_attempt(&request.remote_addr, get_current_millis()) {
         return Response::res_429_json(
             &json!({ "error": "too many failed login attempts, try again later" }).to_string(),
         );
@@ -125,7 +122,6 @@ pub async fn handle_stats_login(request: &Request) -> Response {
         let token = make_token(&server_config.stats_secret, get_current_millis());
         Response::res_200_json(&json!({ "token": token }).to_string())
     } else {
-        record_login_failure(&request.remote_addr, get_current_millis());
         Response::res_403_json(&json!({ "error": "wrong password" }).to_string())
     }
 }
@@ -243,16 +239,21 @@ mod tests {
     fn login_limiter_locks_after_the_budget_then_resets() {
         let base = 1_700_000_000_000;
         let addr = "198.51.100.7";
-        assert!(login_attempt_allowed(addr, base));
-        //a wrong password spends one unit of the budget; success paths never do
-        for _ in 0..LOGIN_MAX_ATTEMPTS {
-            record_login_failure(addr, base);
+        //each attempt reserves one slot; the first LOGIN_MAX_ATTEMPTS in a window are allowed
+        for i in 0..LOGIN_MAX_ATTEMPTS {
+            assert!(
+                register_login_attempt(addr, base),
+                "attempt {i} within budget must be allowed"
+            );
         }
-        //budget spent: locked out inside the window...
-        assert!(!login_attempt_allowed(addr, base + LOGIN_WINDOW_MILLIS - 1));
-        //...and able to try again once the window rolls over
-        assert!(login_attempt_allowed(addr, base + LOGIN_WINDOW_MILLIS + 1));
+        //budget spent: the next attempt inside the same window is refused...
+        assert!(!register_login_attempt(
+            addr,
+            base + LOGIN_WINDOW_MILLIS - 1
+        ));
+        //...and the budget resets once the window rolls over
+        assert!(register_login_attempt(addr, base + LOGIN_WINDOW_MILLIS + 1));
         //another address is unaffected by this one's lockout
-        assert!(login_attempt_allowed("198.51.100.8", base));
+        assert!(register_login_attempt("198.51.100.8", base));
     }
 }

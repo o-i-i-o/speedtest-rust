@@ -117,7 +117,11 @@ impl HttpClient {
         Host: {}\r\n\r\n",
             self.path, self.host
         );
-        self.stream.write_all(request.as_bytes()).await.unwrap();
+        //a write failure on the CLI --update-ipdb path is reported, not turned into a panic
+        if let Err(e) = self.stream.write_all(request.as_bytes()).await {
+            error!("Failed to send download request to {}: {e}", self.host);
+            return;
+        }
         let (socket_r, _) = split(&mut self.stream);
         let mut buf_reader = BufReader::with_capacity(8 * 1024, socket_r);
         Self::download_stream(&mut buf_reader, file_name).await
@@ -128,51 +132,51 @@ impl HttpClient {
         R: AsyncReadExt + Unpin,
     {
         //read status line
-        if let Ok(Some(status_line)) = buf_reader.lines().next_line().await {
-            if status_line.to_lowercase().contains("200 ok") {
-                //headers
-                let parsed_headers = header_parser(buf_reader).await;
-                //read body
-                let body_len = parsed_headers.get("Content-Length");
-                if let Some(body_len) = body_len {
-                    //this runs on the --update-ipdb CLI path; surface a clear message instead of
-                    //panicking on a bad header or an uncreatable file
-                    let Ok(body_len) = body_len.parse::<u64>() else {
-                        error!("Bad Content-Length header while downloading {file_name}");
+        if let Ok(Some(status_line)) = buf_reader.lines().next_line().await
+            && status_line.to_lowercase().contains("200 ok")
+        {
+            //headers
+            let parsed_headers = header_parser(buf_reader).await;
+            //read body
+            let body_len = parsed_headers.get("Content-Length");
+            if let Some(body_len) = body_len {
+                //this runs on the --update-ipdb CLI path; surface a clear message instead of
+                //panicking on a bad header or an uncreatable file
+                let Ok(body_len) = body_len.parse::<u64>() else {
+                    error!("Bad Content-Length header while downloading {file_name}");
+                    return;
+                };
+                let pb = ProgressBar::new(body_len);
+                pb.set_style(ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})")
+                    .unwrap()
+                    .progress_chars("#>-"));
+                let mut file = match File::create(file_name) {
+                    Ok(file) => file,
+                    Err(e) => {
+                        error!("Cannot create {file_name}: {e}");
                         return;
-                    };
-                    let pb = ProgressBar::new(body_len);
-                    pb.set_style(ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})")
-                        .unwrap()
-                        .progress_chars("#>-"));
-                    let mut file = match File::create(file_name) {
-                        Ok(file) => file,
-                        Err(e) => {
-                            error!("Cannot create {file_name}: {e}");
-                            return;
-                        }
-                    };
-                    let mut buffer = [0; 1024];
-                    let mut read_buff: u64 = 0;
-                    'body_loop: loop {
-                        let Ok(n) = buf_reader.read(&mut buffer).await else {
-                            break 'body_loop;
-                        };
-                        if n == 0 {
-                            break 'body_loop;
-                        }
-                        read_buff += n as u64;
-                        pb.set_position(read_buff.min(body_len));
-                        if let Err(e) = file.write_all(&buffer[..n]) {
-                            error!("Write to {file_name} failed: {e}");
-                            break 'body_loop;
-                        }
-                        if read_buff >= body_len {
-                            break 'body_loop;
-                        }
                     }
-                    pb.finish_with_message("Download completed");
+                };
+                let mut buffer = [0; 1024];
+                let mut read_buff: u64 = 0;
+                'body_loop: loop {
+                    let Ok(n) = buf_reader.read(&mut buffer).await else {
+                        break 'body_loop;
+                    };
+                    if n == 0 {
+                        break 'body_loop;
+                    }
+                    read_buff += n as u64;
+                    pb.set_position(read_buff.min(body_len));
+                    if let Err(e) = file.write_all(&buffer[..n]) {
+                        error!("Write to {file_name} failed: {e}");
+                        break 'body_loop;
+                    }
+                    if read_buff >= body_len {
+                        break 'body_loop;
+                    }
                 }
+                pb.finish_with_message("Download completed");
             }
         }
     }
