@@ -1,17 +1,19 @@
-use std::sync::Arc;
+use crate::database::{DBRawToStruct, Database, escape_db_component};
+use crate::results::TelemetryData;
 use async_trait::async_trait;
 use log::info;
-use sqlx::{mysql::{MySqlPool, MySqlPoolOptions, MySqlRow}, Row};
+use sqlx::{
+    Row,
+    mysql::{MySqlPool, MySqlPoolOptions, MySqlRow},
+};
+use std::sync::Arc;
 use tokio::sync::Mutex;
-use crate::database::{Database, DBRawToStruct, escape_db_component};
-use crate::results::TelemetryData;
 
 pub struct MySql {
     pool: MySqlPool,
 }
 
 impl MySql {
-    
     pub async fn init(
         username: &Option<String>,
         password: &Option<String>,
@@ -54,20 +56,22 @@ impl MySql {
                     log text,
                     uuid text,
                     `timestamp` bigint
-                )").execute(&pool).await;
+                )",
+                )
+                .execute(&pool)
+                .await;
 
                 match create_table {
                     Ok(_) => {
                         info!("Database MySql initialized successfully");
-                        Ok(Arc::new(Mutex::new(MySql{pool})))
-                    },
+                        Ok(Arc::new(Mutex::new(MySql { pool })))
+                    }
                     Err(e) => Err(std::io::Error::other(format!("Error setup mysql {:?}", e))),
                 }
             }
             Err(e) => Err(std::io::Error::other(format!("Error setup mysql {:?}", e))),
         }
     }
-    
 }
 
 impl DBRawToStruct<sqlx::Error> for MySqlRow {

@@ -1,18 +1,18 @@
+use crate::config::{DEF_ASSETS, SERVER_CONFIG};
 use std::collections::HashMap;
-use tokio::net::TcpStream;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
-use crate::config::{DEF_ASSETS, SERVER_CONFIG};
+use tokio::net::TcpStream;
 
+pub mod http_client;
 pub mod http_server;
-mod routes;
 pub mod request;
 pub mod response;
-pub mod token;
-pub mod tls;
-pub mod http_client;
+mod routes;
 mod tcp_socket;
+pub mod tls;
+pub mod token;
 
 #[derive(Debug)]
 pub enum Method {
@@ -30,16 +30,16 @@ impl MethodStr for str {
         match self {
             "POST" => Method::Post,
             "OPTIONS" => Method::Options,
-            _ => Method::Get
+            _ => Method::Get,
         }
     }
 }
 
-pub async fn find_remote_ip_addr (conn: &mut TcpStream) -> String {
+pub async fn find_remote_ip_addr(conn: &mut TcpStream) -> String {
     //peer_addr can fail on a socket already closed by the client; that must end the task with a
     //placeholder, not a panic (panic=abort turns it into a process crash)
     match conn.peer_addr() {
-        Ok(client_addr) => client_addr.ip().to_string().replace("::ffff:",""),
+        Ok(client_addr) => client_addr.ip().to_string().replace("::ffff:", ""),
         Err(_) => "unknown".to_string(),
     }
 }
@@ -47,13 +47,13 @@ pub async fn find_remote_ip_addr (conn: &mut TcpStream) -> String {
 ///request-supplied asset paths must not escape the assets directory.
 ///`..` components are rejected, NUL guards against truncation tricks and backslash matters on
 ///Windows builds where `..\` is an accepted separator; the URL is never percent-decoded here.
-fn is_safe_asset_path(file_name : &str) -> bool {
+fn is_safe_asset_path(file_name: &str) -> bool {
     !file_name.contains('\0')
         && !file_name.contains('\\')
         && !file_name.split('/').any(|component| component == "..")
 }
 
-pub fn get_index_file_content(file_name : &str) -> Option<Vec<u8>> {
+pub fn get_index_file_content(file_name: &str) -> Option<Vec<u8>> {
     if !is_safe_asset_path(file_name) {
         return None;
     }
@@ -79,7 +79,7 @@ pub fn get_index_file_content(file_name : &str) -> Option<Vec<u8>> {
         }
     } else {
         let assets_dir = Path::new(SERVER_CONFIG.get()?.assets_path.as_str());
-        let file_path = format!("{}{}",SERVER_CONFIG.get()?.assets_path,file_name);
+        let file_path = format!("{}{}", SERVER_CONFIG.get()?.assets_path, file_name);
         //canonicalizing resolves symlinks too, so a link out of the assets dir is rejected as well
         let assets_dir = assets_dir.canonicalize().ok()?;
         let real_file = Path::new(&file_path).canonicalize().ok()?;
@@ -104,9 +104,10 @@ fn generate_server_endpoint() -> Vec<u8> {
     let base_url = if base_url.is_empty() {
         "".to_string()
     } else {
-        format!("{}/",&base_url[1..])
+        format!("{}/", &base_url[1..])
     };
-    let endpoint = format!(r#"function get_servers() {{
+    let endpoint = format!(
+        r#"function get_servers() {{
         return [
             {{
                 name : "Simple Server",
@@ -117,12 +118,12 @@ fn generate_server_endpoint() -> Vec<u8> {
                 getIpURL: "{base_url}getIP"
             }}
         ]
-    }}"#);
+    }}"#
+    );
     Vec::from(endpoint.as_bytes())
 }
 
-
-pub fn get_chunk_count (query_params : &HashMap<String,String>) -> i32 {
+pub fn get_chunk_count(query_params: &HashMap<String, String>) -> i32 {
     let mut chunks = 4;
     if let Some(ck_size) = query_params.get("ckSize") {
         if let Ok(parsed_ck_size) = ck_size.parse::<i32>() {
@@ -139,10 +140,8 @@ pub fn get_chunk_count (query_params : &HashMap<String,String>) -> i32 {
 
 #[macro_export]
 macro_rules! make_route {
-    ($a:expr) => {
-        {
-            let base_url = SERVER_CONFIG.get().unwrap().base_url.clone();
-            format!("{}{}",base_url,$a)
-        }
-    };
+    ($a:expr) => {{
+        let base_url = SERVER_CONFIG.get().unwrap().base_url.clone();
+        format!("{}{}", base_url, $a)
+    }};
 }

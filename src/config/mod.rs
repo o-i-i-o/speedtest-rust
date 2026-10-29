@@ -3,15 +3,15 @@ use std::io::Error;
 use std::path::Path;
 use std::sync::OnceLock;
 
-use ab_glyph::FontRef;
-use include_dir::{include_dir, Dir};
-use log::{info, warn, LevelFilter, trace};
-use serde::Deserialize;
-use serde_json::Value;
-use tokio::runtime::{Builder, Runtime};
-use std::io::Write;
 use crate::cmd::Cmd;
 use crate::config::time::current_formatted_time;
+use ab_glyph::FontRef;
+use include_dir::{Dir, include_dir};
+use log::{LevelFilter, info, trace, warn};
+use serde::Deserialize;
+use serde_json::Value;
+use std::io::Write;
+use tokio::runtime::{Builder, Runtime};
 
 pub mod time;
 
@@ -37,33 +37,33 @@ impl<T> SetIfSome<T> for Option<T> {
 
 #[derive(Deserialize, Debug)]
 pub struct ServerConfig {
-    pub bind_address : String,
-    pub listen_port : u16,
+    pub bind_address: String,
+    pub listen_port: u16,
     pub worker_threads: Value,
-    pub base_url : String,
-    pub ipinfo_api_key : String,
-    pub stats_password : String,
+    pub base_url: String,
+    pub ipinfo_api_key: String,
+    pub stats_password: String,
     //signing key for the stats bearer token; `#[serde(default)]` keeps existing configs.toml files valid
     //and an empty value is replaced by a random secret at startup (see initialize)
     #[serde(default)]
-    pub stats_secret : String,
+    pub stats_secret: String,
     //honor X-Real-IP / X-Forwarded-For for the client address. Off by default: on a directly
     //exposed deployment these headers are attacker-supplied (forged telemetry IPs, poisoned
     //login rate limiting). Enable only behind a reverse proxy that overwrites them
     #[serde(default)]
-    pub trust_proxy : bool,
-    pub redact_ip_addresses : bool,
-    pub result_image_theme : String,
-    pub assets_path : String,
-    pub database_type : String,
-    pub database_hostname : Option<String>,
-    pub database_name : Option<String>,
-    pub database_username : Option<String>,
-    pub database_password : Option<String>,
-    pub database_file : Option<String>,
-    pub enable_tls : bool,
-    pub tls_cert_file : String,
-    pub tls_key_file : String
+    pub trust_proxy: bool,
+    pub redact_ip_addresses: bool,
+    pub result_image_theme: String,
+    pub assets_path: String,
+    pub database_type: String,
+    pub database_hostname: Option<String>,
+    pub database_name: Option<String>,
+    pub database_username: Option<String>,
+    pub database_password: Option<String>,
+    pub database_file: Option<String>,
+    pub enable_tls: bool,
+    pub tls_cert_file: String,
+    pub tls_key_file: String,
 }
 
 impl Default for ServerConfig {
@@ -93,7 +93,7 @@ impl Default for ServerConfig {
     }
 }
 
-pub fn init_runtime () -> std::io::Result<Runtime> {
+pub fn init_runtime() -> std::io::Result<Runtime> {
     let worker_threads = SERVER_CONFIG.get().unwrap().worker_threads.clone();
     if worker_threads.is_string() && worker_threads == "auto" {
         Builder::new_multi_thread()
@@ -118,14 +118,21 @@ pub fn init_runtime () -> std::io::Result<Runtime> {
     }
 }
 
-pub fn init_configs (cmd : Cmd) -> std::io::Result<()> {
+pub fn init_configs(cmd: Cmd) -> std::io::Result<()> {
     //init logger
     env_logger::builder()
-        .format(|buf,rec| {
+        .format(|buf, rec| {
             let style = buf.default_level_style(rec.level());
-            writeln!(buf, "[{} {style}{}{style:#} librespeed_rs] {}",current_formatted_time(),rec.level(), rec.args())
+            writeln!(
+                buf,
+                "[{} {style}{}{style:#} librespeed_rs] {}",
+                current_formatted_time(),
+                rec.level(),
+                rec.args()
+            )
         })
-        .filter_level(LevelFilter::Info).init();
+        .filter_level(LevelFilter::Info)
+        .init();
     println!("{HEAD_ART}");
     //find server configs
     match cmd.server_config_path.clone() {
@@ -133,13 +140,11 @@ pub fn init_configs (cmd : Cmd) -> std::io::Result<()> {
             let config = open_config_file(&config_path);
             match config {
                 Ok(config) => {
-                    initialize(config,cmd)?;
-                    info!("Configs initialized file : {}",config_path);
+                    initialize(config, cmd)?;
+                    info!("Configs initialized file : {}", config_path);
                     Ok(())
                 }
-                Err(e) => {
-                    Err(Error::other(e))
-                }
+                Err(e) => Err(Error::other(e)),
             }
         }
         None => {
@@ -147,16 +152,16 @@ pub fn init_configs (cmd : Cmd) -> std::io::Result<()> {
             match config {
                 // open config from current dir
                 Ok(config) => {
-                    initialize(config,cmd)?;
+                    initialize(config, cmd)?;
                     info!("Configs initialized file : configs.toml");
                     Ok(())
                 }
                 // set default config
                 Err(e) => {
                     let config = ServerConfig::default();
-                    initialize(config,cmd)?;
+                    initialize(config, cmd)?;
                     info!("Configs initialized with defaults");
-                    trace!("Load config default path error : {}",e);
+                    trace!("Load config default path error : {}", e);
                     Ok(())
                 }
             }
@@ -164,50 +169,45 @@ pub fn init_configs (cmd : Cmd) -> std::io::Result<()> {
     }
 }
 
-fn open_config_file(path : &str) -> std::io::Result<ServerConfig> {
+fn open_config_file(path: &str) -> std::io::Result<ServerConfig> {
     let config_file_content = std::fs::read_to_string(path); // open file
     match config_file_content {
-        Ok(config_file_content) => { // opened file
+        Ok(config_file_content) => {
+            // opened file
             let config = toml::from_str(&config_file_content); // parse config file
             match config {
-                Ok(config) => {
-                    Ok(config)
-                }
-                Err(e) => {
-                    Err(Error::other(e))
-                }
+                Ok(config) => Ok(config),
+                Err(e) => Err(Error::other(e)),
             }
         }
-        Err(e) => {
-            Err(Error::other(e))
-        }
+        Err(e) => Err(Error::other(e)),
     }
 }
 
-fn validate_base_url_path(base_url : &str) -> String {
-    let base_url = base_url.replace('/',"");
+fn validate_base_url_path(base_url: &str) -> String {
+    let base_url = base_url.replace('/', "");
     if base_url.is_empty() {
         "".to_string()
     } else {
-        format!("/{}",base_url)
+        format!("/{}", base_url)
     }
 }
 
-fn generate_routes(base_url : &str) {
+fn generate_routes(base_url: &str) {
     let mut routes = HashMap::new();
-    routes.insert(format!("{base_url}/empty"),"empty");
-    routes.insert(format!("{base_url}/garbage"),"garbage");
-    routes.insert(format!("{base_url}/getIP"),"getIP");
-    routes.insert(format!("{base_url}/results"),"results");
-    routes.insert(format!("{base_url}/results/telemetry"),"results/telemetry");
+    routes.insert(format!("{base_url}/empty"), "empty");
+    routes.insert(format!("{base_url}/garbage"), "garbage");
+    routes.insert(format!("{base_url}/getIP"), "getIP");
+    routes.insert(format!("{base_url}/results"), "results");
+    routes.insert(format!("{base_url}/results/telemetry"), "results/telemetry");
     //the stats page is a static asset now; these are the json endpoints it calls
-    routes.insert(format!("{base_url}/stats"),"stats"); //legacy SSR entry, kept as a redirect
-    routes.insert(format!("{base_url}/stats/login"),"stats/login");
-    routes.insert(format!("{base_url}/stats/data"),"stats/data");
+    routes.insert(format!("{base_url}/stats"), "stats"); //legacy SSR entry, kept as a redirect
+    routes.insert(format!("{base_url}/stats/login"), "stats/login");
+    routes.insert(format!("{base_url}/stats/data"), "stats/data");
     ROUTES.get_or_init(|| routes);
 }
 
-fn initialize (mut config: ServerConfig,cmd : Cmd) -> std::io::Result<()> {
+fn initialize(mut config: ServerConfig, cmd: Cmd) -> std::io::Result<()> {
     //server config
     //the CLI override happens before the normalization: otherwise `--base-url backend` skips
     //validate_base_url_path and routes get registered without the leading slash, 404-ing everything
@@ -219,13 +219,17 @@ fn initialize (mut config: ServerConfig,cmd : Cmd) -> std::io::Result<()> {
     config.assets_path.set_if_some(cmd.assets_path);
     config.stats_password.set_if_some(cmd.stats_password);
     config.trust_proxy.set_if_some(cmd.trust_proxy);
-    config.redact_ip_addresses.set_if_some(cmd.redact_ip_addresses);
-    config.result_image_theme.set_if_some(cmd.result_image_theme);
+    config
+        .redact_ip_addresses
+        .set_if_some(cmd.redact_ip_addresses);
+    config
+        .result_image_theme
+        .set_if_some(cmd.result_image_theme);
     config.database_type.set_if_some(cmd.database_type);
     config.database_hostname.set_if_some(cmd.database_hostname);
     config.database_name.set_if_some(cmd.database_name);
     config.database_username.set_if_some(cmd.database_username);
-    config.database_password .set_if_some(cmd.database_password);
+    config.database_password.set_if_some(cmd.database_password);
     config.database_file.set_if_some(cmd.database_file);
     config.enable_tls.set_if_some(cmd.enable_tls);
     config.tls_cert_file.set_if_some(cmd.tls_cert_file);
@@ -234,8 +238,14 @@ fn initialize (mut config: ServerConfig,cmd : Cmd) -> std::io::Result<()> {
     //one for this process so tokens stop validating after a restart - the safe default for a
     //self-hosted stats page; set stats_secret in configs.toml to keep logins across restarts.
     if config.stats_secret.is_empty() {
-        config.stats_secret = format!("{}{}",crate::database::generate_uuid(),crate::database::generate_uuid());
-        warn!("stats_secret is empty: generated a random one for this run. Set it in configs.toml to keep stats logins across restarts.");
+        config.stats_secret = format!(
+            "{}{}",
+            crate::database::generate_uuid(),
+            crate::database::generate_uuid()
+        );
+        warn!(
+            "stats_secret is empty: generated a random one for this run. Set it in configs.toml to keep stats logins across restarts."
+        );
     }
     generate_routes(&config.base_url);
     if !config.assets_path.is_empty() {
@@ -256,30 +266,32 @@ fn initialize (mut config: ServerConfig,cmd : Cmd) -> std::io::Result<()> {
     garbage.extend(b"\r\n");
     GARBAGE_DATA.get_or_init(|| garbage);
     //font for result image
-    FONT.get_or_init(|| FontRef::try_from_slice(include_bytes!("../../assets/open-sans.ttf")).unwrap());
+    FONT.get_or_init(|| {
+        FontRef::try_from_slice(include_bytes!("../../assets/open-sans.ttf")).unwrap()
+    });
     Ok(())
 }
 
-fn check_assets_path (dir : &str) -> bool {
-    let index_file = format!("{}/index.html",dir);
+fn check_assets_path(dir: &str) -> bool {
+    let index_file = format!("{}/index.html", dir);
     Path::new(&index_file).exists()
 }
 
 /*Static Values*/
-const CHUNK_SIZE : usize = 524288; //512 Kilobytes x2
+const CHUNK_SIZE: usize = 524288; //512 Kilobytes x2
 ///hard caps on inbound bodies, checked before any allocation or drain loop (see http::request).
 ///telemetry/login forms are kilobyte-sized; uploads (Content-Length Fixed bodies) get headroom
 ///above the biggest LibreSpeed client default (1 GiB ulSize), chunked streams a stricter cap
 ///because they are only ever discarded, never parsed
-pub const MAX_FORM_BODY_BYTES : u64 = 64 * 1024;
-pub const MAX_BODY_SIZE_BYTES : u64 = 512 * 1024 * 1024;
-pub const MAX_CHUNKED_BODY_BYTES : u64 = 16 * 1024 * 1024;
-pub static ROUTES: OnceLock<HashMap<String,&str>> = OnceLock::new();
+pub const MAX_FORM_BODY_BYTES: u64 = 64 * 1024;
+pub const MAX_BODY_SIZE_BYTES: u64 = 512 * 1024 * 1024;
+pub const MAX_CHUNKED_BODY_BYTES: u64 = 16 * 1024 * 1024;
+pub static ROUTES: OnceLock<HashMap<String, &str>> = OnceLock::new();
 pub static GARBAGE_DATA: OnceLock<Vec<u8>> = OnceLock::new();
 pub static SERVER_CONFIG: OnceLock<ServerConfig> = OnceLock::new();
 pub static FONT: OnceLock<FontRef> = OnceLock::new();
-pub static DEF_ASSETS : Dir = include_dir!("assets");
-pub const HEAD_ART : &str = r#"
+pub static DEF_ASSETS: Dir = include_dir!("assets");
+pub const HEAD_ART: &str = r#"
      _ _ _                                       _
     | (_) |__  _ __ ___  ___ _ __   ___  ___  __| |      _ __ ___
     | | | '_ \| '__/ _ \/ __| '_ \ / _ \/ _ \/ _` |_____| '__/ __|

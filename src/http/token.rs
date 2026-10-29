@@ -1,25 +1,27 @@
+use crate::database::generate_uuid;
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
-use crate::database::generate_uuid;
 
-const ID_PREFIX : &str = "_session";
-const TOKEN_SEPARATOR : char = '.';
+const ID_PREFIX: &str = "_session";
+const TOKEN_SEPARATOR: char = '.';
 ///session lifetime in milliseconds; the old cookie advertised Max-Age=3600 but never checked it
 ///server-side, so signing the issue time and enforcing it here is the actual fix for staleness.
-pub const TOKEN_TTL_MILLIS : i64 = 3600 * 1000;
+pub const TOKEN_TTL_MILLIS: i64 = 3600 * 1000;
 
 ///opaque, stateless bearer token: `{id}.{issued_at}.{hmac_sha256(secret, id + "." + issued_at)}`.
 ///the signing key comes from configuration (never a compiled-in constant) and the issue time is
 ///covered by the signature, so a leaked token expires and a forged one needs the secret.
-pub fn make_token(secret : &str, now_millis : i64) -> String {
+pub fn make_token(secret: &str, now_millis: i64) -> String {
     let token_id = format!("{}{}", ID_PREFIX, generate_uuid());
     let signature = sign(secret, &token_id, now_millis);
     format!("{token_id}{TOKEN_SEPARATOR}{now_millis}{TOKEN_SEPARATOR}{signature}")
 }
 
-pub fn validate_token(secret : &str, token : &str, now_millis : i64) -> bool {
+pub fn validate_token(secret: &str, token: &str, now_millis: i64) -> bool {
     let mut split = token.splitn(3, TOKEN_SEPARATOR);
-    let (Some(token_id), Some(issued_str), Some(signature)) = (split.next(), split.next(), split.next()) else {
+    let (Some(token_id), Some(issued_str), Some(signature)) =
+        (split.next(), split.next(), split.next())
+    else {
         return false;
     };
     let Ok(issued_at) = issued_str.parse::<i64>() else {
@@ -34,25 +36,32 @@ pub fn validate_token(secret : &str, token : &str, now_millis : i64) -> bool {
     if !(0..=TOKEN_TTL_MILLIS).contains(&age) {
         return false;
     }
-    fixed_time_eq(signature.as_bytes(), sign(secret, token_id, issued_at).as_bytes())
+    fixed_time_eq(
+        signature.as_bytes(),
+        sign(secret, token_id, issued_at).as_bytes(),
+    )
 }
 
 ///HMAC-SHA256 rather than the previous `sha256(id.issued.secret)` concatenation: a standard MAC
 ///construction, immune to any length-extension-shape concerns should the field order ever move
 ///the secret to the front.
-fn sign(secret : &str, token_id : &str, issued_at : i64) -> String {
+fn sign(secret: &str, token_id: &str, issued_at: i64) -> String {
     //HMAC accepts keys of any length, so the only error here would be an impossible >2^64 key
-    let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(secret.as_bytes()).expect("unable to create hmac");
+    let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(secret.as_bytes())
+        .expect("unable to create hmac");
     mac.update(format!("{token_id}{TOKEN_SEPARATOR}{issued_at}").as_bytes());
-    mac.finalize().into_bytes().iter().fold(String::new(), |mut acc, b| {
-        use std::fmt::Write;
-        write!(&mut acc, "{b:02x}").expect("unable to write");
-        acc
-    })
+    mac.finalize()
+        .into_bytes()
+        .iter()
+        .fold(String::new(), |mut acc, b| {
+            use std::fmt::Write;
+            write!(&mut acc, "{b:02x}").expect("unable to write");
+            acc
+        })
 }
 
 ///pull the bearer credential out of an `Authorization` header value, if the scheme matches.
-pub fn extract_bearer(authorization : Option<&String>) -> Option<&str> {
+pub fn extract_bearer(authorization: Option<&String>) -> Option<&str> {
     let authorization = authorization?;
     let (scheme, token) = authorization.split_once(' ')?;
     if !scheme.eq_ignore_ascii_case("Bearer") {
@@ -64,7 +73,7 @@ pub fn extract_bearer(authorization : Option<&String>) -> Option<&str> {
 
 ///compare without leaking the match length through early exit; used for the signature so an
 ///attacker cannot probe how many leading bytes of a forgery are correct.
-pub fn fixed_time_eq(a : &[u8], b : &[u8]) -> bool {
+pub fn fixed_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
@@ -79,7 +88,7 @@ pub fn fixed_time_eq(a : &[u8], b : &[u8]) -> bool {
 mod tests {
     use super::*;
 
-    const SECRET : &str = "unit-test-secret";
+    const SECRET: &str = "unit-test-secret";
 
     #[test]
     fn token_round_trips_within_ttl() {
@@ -94,8 +103,14 @@ mod tests {
     fn token_expires_and_rejects_future_issue() {
         let now = 1_700_000_000_000;
         let token = make_token(SECRET, now);
-        assert!(!validate_token(SECRET, &token, now + TOKEN_TTL_MILLIS + 1), "expired token must be rejected");
-        assert!(!validate_token(SECRET, &token, now - 1), "future-dated token must be rejected");
+        assert!(
+            !validate_token(SECRET, &token, now + TOKEN_TTL_MILLIS + 1),
+            "expired token must be rejected"
+        );
+        assert!(
+            !validate_token(SECRET, &token, now - 1),
+            "future-dated token must be rejected"
+        );
     }
 
     #[test]
@@ -117,9 +132,21 @@ mod tests {
         //subtraction used to underflow and panic on i64::MIN (pre-auth connection DoS, and with
         //overflow-checks + panic=abort a full process crash)
         let now = 1_700_000_000_000;
-        assert!(!validate_token(SECRET, &format!("_sessionx.{}.deadbeef", i64::MIN), now));
-        assert!(!validate_token(SECRET, &format!("_sessionx.{}.deadbeef", i64::MAX), now));
-        assert!(!validate_token(SECRET, "_sessionx.-9223372036854775808.deadbeef", now));
+        assert!(!validate_token(
+            SECRET,
+            &format!("_sessionx.{}.deadbeef", i64::MIN),
+            now
+        ));
+        assert!(!validate_token(
+            SECRET,
+            &format!("_sessionx.{}.deadbeef", i64::MAX),
+            now
+        ));
+        assert!(!validate_token(
+            SECRET,
+            "_sessionx.-9223372036854775808.deadbeef",
+            now
+        ));
     }
 
     #[test]

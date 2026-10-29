@@ -1,27 +1,27 @@
-use clap::{value_parser, Arg, ArgAction, Command};
+use clap::{Arg, ArgAction, Command, value_parser};
 
 #[derive(Debug)]
 pub struct Cmd {
-    pub download_ipdb : bool,
-    pub server_config_path : Option<String>,
-    pub bind_address : Option<String>,
-    pub listen_port : Option<u16>,
-    pub base_url : Option<String>,
-    pub ipinfo_api_key : Option<String>,
-    pub assets_path : Option<String>,
-    pub stats_password : Option<String>,
-    pub trust_proxy : Option<bool>,
-    pub redact_ip_addresses : Option<bool>,
-    pub result_image_theme : Option<String>,
-    pub database_type : Option<String>,
-    pub database_hostname : Option<String>,
-    pub database_name : Option<String>,
-    pub database_username : Option<String>,
-    pub database_password : Option<String>,
-    pub database_file : Option<String>,
-    pub enable_tls : Option<bool>,
-    pub tls_cert_file : Option<String>,
-    pub tls_key_file : Option<String>,
+    pub download_ipdb: bool,
+    pub server_config_path: Option<String>,
+    pub bind_address: Option<String>,
+    pub listen_port: Option<u16>,
+    pub base_url: Option<String>,
+    pub ipinfo_api_key: Option<String>,
+    pub assets_path: Option<String>,
+    pub stats_password: Option<String>,
+    pub trust_proxy: Option<bool>,
+    pub redact_ip_addresses: Option<bool>,
+    pub result_image_theme: Option<String>,
+    pub database_type: Option<String>,
+    pub database_hostname: Option<String>,
+    pub database_name: Option<String>,
+    pub database_username: Option<String>,
+    pub database_password: Option<String>,
+    pub database_file: Option<String>,
+    pub enable_tls: Option<bool>,
+    pub tls_cert_file: Option<String>,
+    pub tls_key_file: Option<String>,
 }
 
 const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -30,7 +30,6 @@ const PKG_AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
 const PKG_DESCRIPTION: &str = env!("CARGO_PKG_DESCRIPTION");
 
 impl Cmd {
-
     pub fn parse_args() -> Self {
         let args = Command::new(PKG_NAME)
             .version(PKG_VERSION)
@@ -159,25 +158,51 @@ impl Cmd {
             )
             .get_matches();
         let download_ipdb = args.get_flag("update-ipdb");
-        let server_config_path : Option<String> = args.get_one::<String>("server-config-path").map(|s| s.to_owned());
-        let bind_address : Option<String> = args.get_one::<String>("bind-address").map(|s| s.to_owned());
-        let listen_port : Option<u16> = args.get_one::<u16>("listen-port").map(|s| s.to_owned());
-        let base_url : Option<String> = args.get_one::<String>("base-url").map(|s| s.to_owned());
-        let ipinfo_api_key : Option<String> = args.get_one::<String>("ipinfo-api-key").map(|s| s.to_owned());
-        let assets_path : Option<String> = args.get_one::<String>("assets-path").map(|s| s.to_owned());
-        let stats_password : Option<String> = args.get_one::<String>("stats-password").map(|s| s.to_owned());
-        let trust_proxy : Option<bool> = args.get_one::<bool>("trust-proxy").map(|s| s.to_owned());
-        let redact_ip_addresses : Option<bool> = args.get_one::<bool>("redact-ips").map(|s| s.to_owned());
-        let result_image_theme : Option<String> = args.get_one::<String>("result-image-theme").map(|s| s.to_owned());
-        let database_type : Option<String> = args.get_one::<String>("database-type").map(|s| s.to_owned());
-        let database_hostname : Option<String> = args.get_one::<String>("database-hostname").map(|s| s.to_owned());
-        let database_name : Option<String> = args.get_one::<String>("database-name").map(|s| s.to_owned());
-        let database_username : Option<String> = args.get_one::<String>("database-username").map(|s| s.to_owned());
-        let database_password : Option<String> = args.get_one::<String>("database-password").map(|s| s.to_owned());
-        let database_file : Option<String> = args.get_one::<String>("database-file").map(|s| s.to_owned());
-        let enable_tls : Option<bool> = args.get_one::<bool>("enable-tls").map(|s| s.to_owned());
-        let tls_cert_file : Option<String> = args.get_one::<String>("tls-cert-file").map(|s| s.to_owned());
-        let tls_key_file : Option<String> = args.get_one::<String>("tls-key-file").map(|s| s.to_owned());
+        let server_config_path: Option<String> = args
+            .get_one::<String>("server-config-path")
+            .map(|s| s.to_owned());
+        let bind_address: Option<String> =
+            args.get_one::<String>("bind-address").map(|s| s.to_owned());
+        let listen_port: Option<u16> = args.get_one::<u16>("listen-port").map(|s| s.to_owned());
+        let base_url: Option<String> = args.get_one::<String>("base-url").map(|s| s.to_owned());
+        let ipinfo_api_key: Option<String> = args
+            .get_one::<String>("ipinfo-api-key")
+            .map(|s| s.to_owned());
+        let assets_path: Option<String> =
+            args.get_one::<String>("assets-path").map(|s| s.to_owned());
+        let stats_password: Option<String> = args
+            .get_one::<String>("stats-password")
+            .map(|s| s.to_owned());
+        let trust_proxy: Option<bool> = args.get_one::<bool>("trust-proxy").map(|s| s.to_owned());
+        let redact_ip_addresses: Option<bool> =
+            args.get_one::<bool>("redact-ips").map(|s| s.to_owned());
+        let result_image_theme: Option<String> = args
+            .get_one::<String>("result-image-theme")
+            .map(|s| s.to_owned());
+        let database_type: Option<String> = args
+            .get_one::<String>("database-type")
+            .map(|s| s.to_owned());
+        let database_hostname: Option<String> = args
+            .get_one::<String>("database-hostname")
+            .map(|s| s.to_owned());
+        let database_name: Option<String> = args
+            .get_one::<String>("database-name")
+            .map(|s| s.to_owned());
+        let database_username: Option<String> = args
+            .get_one::<String>("database-username")
+            .map(|s| s.to_owned());
+        let database_password: Option<String> = args
+            .get_one::<String>("database-password")
+            .map(|s| s.to_owned());
+        let database_file: Option<String> = args
+            .get_one::<String>("database-file")
+            .map(|s| s.to_owned());
+        let enable_tls: Option<bool> = args.get_one::<bool>("enable-tls").map(|s| s.to_owned());
+        let tls_cert_file: Option<String> = args
+            .get_one::<String>("tls-cert-file")
+            .map(|s| s.to_owned());
+        let tls_key_file: Option<String> =
+            args.get_one::<String>("tls-key-file").map(|s| s.to_owned());
         Cmd {
             download_ipdb,
             server_config_path,
@@ -201,5 +226,4 @@ impl Cmd {
             tls_key_file,
         }
     }
-
 }

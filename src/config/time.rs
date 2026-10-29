@@ -1,12 +1,12 @@
-use std::time::{SystemTime, UNIX_EPOCH};
 use chrono::{DateTime, Local};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-pub fn convert_time_local (time : i64) -> String {
+pub fn convert_time_local(time: i64) -> String {
     //a corrupt or hand-inserted telemetry row can carry an out-of-range timestamp; rendering a
     //result image must never panic the process over it
     match DateTime::from_timestamp_millis(time) {
         Some(dt) => {
-            let local : DateTime<Local> = DateTime::from(dt);
+            let local: DateTime<Local> = DateTime::from(dt);
             local.format("%Y-%m-%d %H:%M:%S").to_string()
         }
         None => String::new(),
@@ -18,14 +18,14 @@ pub fn current_formatted_time() -> String {
 }
 
 #[allow(dead_code)]
-pub fn convert_time_utc (time : i64) -> String {
+pub fn convert_time_utc(time: i64) -> String {
     match DateTime::from_timestamp_millis(time) {
         Some(dt) => dt.format("%Y-%m-%d %H:%M:%S").to_string(),
         None => String::new(),
     }
 }
 
-pub fn get_current_millis () -> i64 {
+pub fn get_current_millis() -> i64 {
     let start = SystemTime::now();
     let since_the_epoch = start
         .duration_since(UNIX_EPOCH)

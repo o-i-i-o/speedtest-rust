@@ -1,35 +1,35 @@
+use crate::config::{GARBAGE_DATA, SERVER_CONFIG};
+use crate::http::response::Response;
+use crate::http::{Method, MethodStr};
+use case_insensitive_hashmap::CaseInsensitiveHashMap as CIHashMap;
+use log::{trace, warn};
 use std::collections::HashMap;
 use std::future::Future;
 use std::net::IpAddr;
 use std::pin::Pin;
 use std::str::FromStr;
 use std::time::Duration;
-use log::{trace, warn};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::time::timeout;
-use case_insensitive_hashmap::CaseInsensitiveHashMap as CIHashMap;
-use crate::config::{GARBAGE_DATA, SERVER_CONFIG};
-use crate::http::{Method, MethodStr};
-use crate::http::response::Response;
 
 ///idle read budgets: every socket wait is bounded so a stalled or malicious client cannot pin
 ///a connection task forever (slowloris). Generous for bulk uploads, tight for line reads.
-const STATUS_LINE_TIMEOUT : Duration = Duration::from_secs(30);
-const HEADER_LINE_TIMEOUT : Duration = Duration::from_secs(30);
-const BODY_READ_TIMEOUT : Duration = Duration::from_secs(300);
+const STATUS_LINE_TIMEOUT: Duration = Duration::from_secs(30);
+const HEADER_LINE_TIMEOUT: Duration = Duration::from_secs(30);
+const BODY_READ_TIMEOUT: Duration = Duration::from_secs(300);
 ///a single request/status line may not exceed this, bounding per-connection buffering
-const MAX_LINE_LEN : usize = 64 * 1024;
+const MAX_LINE_LEN: usize = 64 * 1024;
 ///chunk-size lines are tiny; anything longer is not a chunked body
-const MAX_CHUNK_LINE_LEN : usize = 128;
+const MAX_CHUNK_LINE_LEN: usize = 128;
 
 #[derive(Debug)]
 pub struct Request {
     pub path: String,
     pub method: Method,
-    pub remote_addr : String,
+    pub remote_addr: String,
     pub query_params: HashMap<String, String>,
     pub headers: CIHashMap<String>,
-    pub form_data : HashMap<String, String>
+    pub form_data: HashMap<String, String>,
 }
 
 #[derive(Debug)]
@@ -37,7 +37,7 @@ enum BodyType {
     Fixed,
     Chunked,
     Form,
-    FormUrlEncoded
+    FormUrlEncoded,
 }
 
 ///outcome of one bounded line read; `TooLarge` means the client sent a line beyond MAX_LINE_LEN
@@ -48,9 +48,9 @@ enum LineRead {
     Empty,
 }
 
-async fn read_line<R>(buf_reader : &mut BufReader<R>, limit : Duration, max_len : usize) -> LineRead
+async fn read_line<R>(buf_reader: &mut BufReader<R>, limit: Duration, max_len: usize) -> LineRead
 where
-    R: AsyncReadExt + Unpin
+    R: AsyncReadExt + Unpin,
 {
     match timeout(limit, buf_reader.lines().next_line()).await {
         Ok(Ok(Some(line))) if line.len() <= max_len => LineRead::Value(line),
@@ -63,9 +63,9 @@ where
 
 ///exactly `want` bytes or give up: every read is bounded and a short return (EOF) fails the
 ///whole call, so callers never hang on a client that promised bytes it will not send
-async fn read_exact_bounded<R>(buf_reader : &mut BufReader<R>, want : usize, limit : Duration) -> bool
+async fn read_exact_bounded<R>(buf_reader: &mut BufReader<R>, want: usize, limit: Duration) -> bool
 where
-    R: AsyncReadExt + Unpin
+    R: AsyncReadExt + Unpin,
 {
     let mut gathered = Vec::with_capacity(want);
     let mut scratch = [0u8; 8192];
@@ -82,9 +82,9 @@ where
 ///drain and discard the body of a Content-Length request. `read` counts the bytes actually
 ///returned, so any Content-Length is safe (the old fixed-buffer `read_exact` loop demanded a
 ///full final buffer and hung or over-read into the pipelined next request)
-async fn drain_fixed_body<R>(buf_reader : &mut BufReader<R>, body_size : u64)
+async fn drain_fixed_body<R>(buf_reader: &mut BufReader<R>, body_size: u64)
 where
-    R: AsyncReadExt + Unpin
+    R: AsyncReadExt + Unpin,
 {
     let mut buffer = [0u8; 65536];
     let mut remaining = body_size as usize;
@@ -103,9 +103,9 @@ where
 ///starts at a clean boundary. The previous implementation blind-read 1024-byte blocks, which
 ///desynchronized the stream. Returns the byte count seen, or None on a broken/oversized stream;
 ///every wait is bounded, so a stalled sender cannot wedge the task
-async fn consume_chunked_body<R>(buf_reader : &mut BufReader<R>) -> Option<u64>
+async fn consume_chunked_body<R>(buf_reader: &mut BufReader<R>) -> Option<u64>
 where
-    R: AsyncReadExt + Unpin
+    R: AsyncReadExt + Unpin,
 {
     let mut total = 0u64;
     loop {
@@ -113,14 +113,16 @@ where
             LineRead::Value(line) => line,
             //oversized "size line": stop framing, but keep draining to the terminating 0 chunk
             //so a following pipelined request is not swallowed as body data
-            LineRead::TooLarge => {
-                loop {
-                    match read_line(buf_reader, BODY_READ_TIMEOUT, MAX_CHUNK_LINE_LEN).await {
-                        LineRead::Value(l) => if l.trim().is_empty() { return None },
-                        LineRead::Empty | LineRead::TooLarge => return None,
+            LineRead::TooLarge => loop {
+                match read_line(buf_reader, BODY_READ_TIMEOUT, MAX_CHUNK_LINE_LEN).await {
+                    LineRead::Value(l) => {
+                        if l.trim().is_empty() {
+                            return None;
+                        }
                     }
+                    LineRead::Empty | LineRead::TooLarge => return None,
                 }
-            }
+            },
             LineRead::Empty => return None,
         };
         //chunk-size lines may carry ;ext parameters after the hex length
@@ -145,7 +147,10 @@ where
             //a chunked stream beyond the cap is a flood, not an upload: stop reading and drop
             //the connection rather than draining an attacker-chosen amount of bytes
             _ => {
-                warn!("rejected oversized chunked request body (cap {} bytes)", crate::config::MAX_CHUNKED_BODY_BYTES);
+                warn!(
+                    "rejected oversized chunked request body (cap {} bytes)",
+                    crate::config::MAX_CHUNKED_BODY_BYTES
+                );
                 return None;
             }
         };
@@ -166,13 +171,17 @@ where
     }
 }
 
-pub async fn handle_socket<R,W,F>(remote_addr : &str,buf_reader: &mut BufReader<R>,buf_writer : &mut BufWriter<W>,result : F)
-    where
-R: AsyncReadExt + Unpin,
-W: AsyncWriteExt + Unpin,
-F: Send + Sync + Fn(Request) -> Pin<Box<dyn Future<Output = Response> + Send>>
+pub async fn handle_socket<R, W, F>(
+    remote_addr: &str,
+    buf_reader: &mut BufReader<R>,
+    buf_writer: &mut BufWriter<W>,
+    result: F,
+) where
+    R: AsyncReadExt + Unpin,
+    W: AsyncWriteExt + Unpin,
+    F: Send + Sync + Fn(Request) -> Pin<Box<dyn Future<Output = Response> + Send>>,
 {
-    'root_loop:loop {
+    'root_loop: loop {
         //read status line, bounded; a missing/unparsable line ends the connection
         let parsed_status = {
             match read_line(buf_reader, STATUS_LINE_TIMEOUT, MAX_LINE_LEN).await {
@@ -204,14 +213,17 @@ F: Send + Sync + Fn(Request) -> Pin<Box<dyn Future<Output = Response> + Send>>
         //libraries) wait out their continue-timeout (~1s for curl) on every upload request.
         if let Some(expect) = parsed_headers.get("Expect") {
             if expect.eq_ignore_ascii_case("100-continue")
-                && buf_writer.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").await.is_ok()
+                && buf_writer
+                    .write_all(b"HTTP/1.1 100 Continue\r\n\r\n")
+                    .await
+                    .is_ok()
             {
                 let _ = buf_writer.flush().await;
             }
         }
         //read body content
         let body_form_data = {
-            let (body_type,body_size) = check_has_body(&parsed_headers);
+            let (body_type, body_size) = check_has_body(&parsed_headers);
             match body_type {
                 Some(body_type) => {
                     match body_type {
@@ -235,21 +247,20 @@ F: Send + Sync + Fn(Request) -> Pin<Box<dyn Future<Output = Response> + Send>>
                                 .and_then(|ct| get_content_boundary(ct));
                             match (form_boundary, body_size) {
                                 (Some(form_boundary), Some(body_size)) => {
-                                    let body = read_limited_body(buf_reader, body_size as usize).await;
+                                    let body =
+                                        read_limited_body(buf_reader, body_size as usize).await;
                                     Some(parse_form_data(&form_boundary, &body))
                                 }
                                 _ => None,
                             }
                         }
-                        BodyType::FormUrlEncoded => {
-                            match body_size {
-                                Some(body_size) => {
-                                    let body = read_limited_body(buf_reader, body_size as usize).await;
-                                    Some(parse_form_url_encoded(&body))
-                                }
-                                None => None,
+                        BodyType::FormUrlEncoded => match body_size {
+                            Some(body_size) => {
+                                let body = read_limited_body(buf_reader, body_size as usize).await;
+                                Some(parse_form_url_encoded(&body))
                             }
-                        }
+                            None => None,
+                        },
                     }
                 }
                 None => None,
@@ -265,8 +276,9 @@ F: Send + Sync + Fn(Request) -> Pin<Box<dyn Future<Output = Response> + Send>>
             remote_addr,
             query_params: parsed_status.2,
             headers: parsed_headers,
-            form_data : body_form_data.clone().unwrap_or(HashMap::new())
-        }).await;
+            form_data: body_form_data.clone().unwrap_or(HashMap::new()),
+        })
+        .await;
         if let Err(e) = buf_writer.write_all(&response.data).await {
             trace!("Error socket write : {e}")
         }
@@ -287,35 +299,43 @@ F: Send + Sync + Fn(Request) -> Pin<Box<dyn Future<Output = Response> + Send>>
 }
 
 //allow http 1.* & POST, GET, OPTIONS methods
-fn check_is_status_line (line : String) -> bool {
-    line.contains("http/1.") && (line.starts_with("get") || line.starts_with("options") || line.starts_with("post"))
+fn check_is_status_line(line: String) -> bool {
+    line.contains("http/1.")
+        && (line.starts_with("get") || line.starts_with("options") || line.starts_with("post"))
 }
 
 ///parse `METHOD SP PATH SP VERSION`; a request line without all three parts is a 400-worthy
 ///malformation, never an unwrap() panic (which aborts the whole process under panic=abort)
-fn parse_request_status_line (line : String) -> Option<(Method,String,HashMap<String, String>)> {
+fn parse_request_status_line(line: String) -> Option<(Method, String, HashMap<String, String>)> {
     let mut split_status = line.split(' ');
-    let (Some(method_str), Some(raw_path), Some(_version)) = (split_status.next(), split_status.next(), split_status.next()) else {
+    let (Some(method_str), Some(raw_path), Some(_version)) = (
+        split_status.next(),
+        split_status.next(),
+        split_status.next(),
+    ) else {
         return None;
     };
-    let (path,query_params) = parse_raw_path(raw_path);
-    Some((method_str.to_method(),path,query_params))
+    let (path, query_params) = parse_raw_path(raw_path);
+    Some((method_str.to_method(), path, query_params))
 }
 
 pub async fn header_parser<R>(buf_reader: &mut BufReader<R>) -> CIHashMap<String>
 where
-    R: AsyncReadExt + Unpin
+    R: AsyncReadExt + Unpin,
 {
     let mut headers_out = CIHashMap::new();
-    'header_loop:loop {
+    'header_loop: loop {
         match read_line(buf_reader, HEADER_LINE_TIMEOUT, MAX_LINE_LEN).await {
             LineRead::Value(header_line) => {
                 if header_line.is_empty() {
                     break 'header_loop;
                 }
                 let mut header_parts = header_line.splitn(2, ':');
-                if let (Some(header_key),Some(header_val)) = (header_parts.next(),header_parts.next()) {
-                    headers_out.insert(header_key.trim().to_string(),header_val.trim().to_string());
+                if let (Some(header_key), Some(header_val)) =
+                    (header_parts.next(), header_parts.next())
+                {
+                    headers_out
+                        .insert(header_key.trim().to_string(), header_val.trim().to_string());
                 }
             }
             //oversized header or EOF/timeout: stop parsing; the request is malformed at that point
@@ -327,9 +347,9 @@ where
 
 ///read at most `max` body bytes; the read loop is timeout-bounded and a peer that stops early
 ///just yields what arrived, instead of panicking the connection task
-async fn read_limited_body<R>(buf_reader : &mut BufReader<R>, max : usize) -> Vec<u8>
+async fn read_limited_body<R>(buf_reader: &mut BufReader<R>, max: usize) -> Vec<u8>
 where
-    R: AsyncReadExt + Unpin
+    R: AsyncReadExt + Unpin,
 {
     let mut body = Vec::with_capacity(max.min(8192));
     let mut scratch = [0u8; 8192];
@@ -348,7 +368,7 @@ where
 ///  silently treated as 0 and desynchronize keep-alive framing
 ///- an oversized body must never be allocated or drained; form endpoints only need kilobytes,
 ///  uploads (Fixed) are capped by MAX_BODY_SIZE_BYTES, chunked streams by MAX_CHUNKED_BODY_BYTES
-fn check_body_limit(headers : &CIHashMap<String>) -> Option<&'static str> {
+fn check_body_limit(headers: &CIHashMap<String>) -> Option<&'static str> {
     let content_len_raw = headers.get("Content-Length").map(|s| s.as_str());
     let body_type = headers.get("Content-Type").map(|content_type| {
         if content_type.starts_with("multipart/form-data;") {
@@ -365,7 +385,9 @@ fn check_body_limit(headers : &CIHashMap<String>) -> Option<&'static str> {
         };
         if content_len > 0 {
             let cap = match body_type {
-                Some(BodyType::Form) | Some(BodyType::FormUrlEncoded) => crate::config::MAX_FORM_BODY_BYTES,
+                Some(BodyType::Form) | Some(BodyType::FormUrlEncoded) => {
+                    crate::config::MAX_FORM_BODY_BYTES
+                }
                 _ => crate::config::MAX_BODY_SIZE_BYTES,
             };
             if content_len > cap {
@@ -377,7 +399,7 @@ fn check_body_limit(headers : &CIHashMap<String>) -> Option<&'static str> {
     None
 }
 
-fn check_has_body(headers : &CIHashMap<String>) -> (Option<BodyType>,Option<u64>) {
+fn check_has_body(headers: &CIHashMap<String>) -> (Option<BodyType>, Option<u64>) {
     let content_type_form = if let Some(content_type) = headers.get("Content-Type") {
         if content_type.starts_with("multipart/form-data;") {
             Some(BodyType::Form)
@@ -398,25 +420,27 @@ fn check_has_body(headers : &CIHashMap<String>) -> (Option<BodyType>,Option<u64>
             } else {
                 BodyType::Fixed
             };
-            return (Some(body_type),Some(content_len))
+            return (Some(body_type), Some(content_len));
         };
     };
     //check chunked body
     if let Some(transfer_encoding) = headers.get("Transfer-Encoding") {
         if transfer_encoding == "chunked" {
-            return (Some(BodyType::Chunked),Some(0))
+            return (Some(BodyType::Chunked), Some(0));
         }
     }
-    (None,None)
+    (None, None)
 }
 
 ///send a minimal error response and end the connection; used by pre-read rejections where no
 ///handler ran and the body was never consumed
-async fn write_simple<W>(buf_writer : &mut BufWriter<W>, status : &str) -> ()
+async fn write_simple<W>(buf_writer: &mut BufWriter<W>, status: &str) -> ()
 where
-    W: AsyncWriteExt + Unpin
+    W: AsyncWriteExt + Unpin,
 {
-    let body = format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\n\r\n");
+    let body = format!(
+        "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\n\r\n"
+    );
     let _ = buf_writer.write_all(body.as_bytes()).await;
     let _ = buf_writer.flush().await;
 }
@@ -437,7 +461,7 @@ fn parse_raw_path(raw_path: &str) -> (String, HashMap<String, String>) {
         let split_raw_query_params = raw_query_params.split('&');
         for part in split_raw_query_params {
             let mut split_part = part.split('=');
-            if let (Some(query_key),Some(query_val)) = (split_part.next(),split_part.next())  {
+            if let (Some(query_key), Some(query_val)) = (split_part.next(), split_part.next()) {
                 query_params.insert(query_key.to_string(), query_val.to_string());
             }
         }
@@ -456,14 +480,16 @@ fn clear_path_end_slash(input: &str) -> &str {
 ///the proxy headers are only honored when `trust_proxy` is on: on a directly exposed deployment
 ///`X-Real-IP` is attacker-supplied and would otherwise forge telemetry IPs and reach the mmdb
 ///parser. Even then the value must parse as an IP, or the socket address stands
-fn trust_addr_proxy(headers : &CIHashMap<String>,remote_addr : &str,trust_proxy : bool) -> String {
+fn trust_addr_proxy(headers: &CIHashMap<String>, remote_addr: &str, trust_proxy: bool) -> String {
     if !trust_proxy {
         return remote_addr.to_string();
     }
-    let candidate = headers.get("X-Real-IP")
+    let candidate = headers
+        .get("X-Real-IP")
         .map(|s| s.trim().to_string())
         .or_else(|| {
-            headers.get("X-Forwarded-For")
+            headers
+                .get("X-Forwarded-For")
                 .and_then(|s| s.split(',').next())
                 .map(|ip| ip.trim().to_string())
         });
@@ -475,16 +501,16 @@ fn trust_addr_proxy(headers : &CIHashMap<String>,remote_addr : &str,trust_proxy 
 }
 
 //form-data-parser
-fn get_content_boundary(content_type : &str) -> Option<String> {
+fn get_content_boundary(content_type: &str) -> Option<String> {
     let parts = content_type.split(';');
     let mut boundary = None;
     for part in parts {
         let part = part.trim();
         if part.starts_with("boundary=") {
-            let mut boundary_str = part.splitn(2,'=');
+            let mut boundary_str = part.splitn(2, '=');
             let boundary_result = boundary_str.nth(1);
             match boundary_result {
-                None => {},
+                None => {}
                 Some(boundary_result) => {
                     //a quoted boundary (`boundary="abc"`) is legal per RFC 2045; strip the quotes
                     let boundary_result = boundary_result.trim().trim_matches('"');
@@ -501,7 +527,7 @@ fn get_content_boundary(content_type : &str) -> Option<String> {
     boundary
 }
 
-fn parse_form_data(boundary : &str,body : &[u8]) -> HashMap<String,String> {
+fn parse_form_data(boundary: &str, body: &[u8]) -> HashMap<String, String> {
     let body_str = String::from_utf8_lossy(body);
     let mut form_data = HashMap::new();
     let form_parts = body_str.split(boundary);
@@ -512,16 +538,18 @@ fn parse_form_data(boundary : &str,body : &[u8]) -> HashMap<String,String> {
             //blank line so a body containing CRLF (telemetry `log`, long `extra`) survives whole;
             //the old splitn(2,"\r\n") kept only up to the first line and truncated every value.
             //operating on the lossy String (not byte slices) avoids a char-boundary panic
-            let mut head_and_value = form_part.splitn(2,"\r\n\r\n");
+            let mut head_and_value = form_part.splitn(2, "\r\n\r\n");
             let headers = head_and_value.next().unwrap_or("");
-            let Some(value) = head_and_value.next() else { continue };
-            let value = value.replace("\r\n","");
+            let Some(value) = head_and_value.next() else {
+                continue;
+            };
+            let value = value.replace("\r\n", "");
             //parse key from the Content-Disposition header line
-            let mut split_disposition = headers.splitn(2,';');
+            let mut split_disposition = headers.splitn(2, ';');
             if let Some(name_part) = split_disposition.nth(1) {
-                if let Some(key) = name_part.split_once('=').map(|x|x.1) {
-                    let key = key.replace('"',"");
-                    form_data.insert(key,value);
+                if let Some(key) = name_part.split_once('=').map(|x| x.1) {
+                    let key = key.replace('"', "");
+                    form_data.insert(key, value);
                 }
             }
         }
@@ -529,37 +557,52 @@ fn parse_form_data(boundary : &str,body : &[u8]) -> HashMap<String,String> {
     form_data
 }
 
-fn parse_form_url_encoded(body : &[u8]) -> HashMap<String,String> {
+fn parse_form_url_encoded(body: &[u8]) -> HashMap<String, String> {
     let body_str = String::from_utf8_lossy(body);
     let split_parts = body_str.split('&');
     let mut form_data = HashMap::new();
     for part in split_parts {
-        let mut split_key_value = part.splitn(2,'=');
-        if let (Some(key),Some(value)) = (split_key_value.next(),split_key_value.next())  {
+        let mut split_key_value = part.splitn(2, '=');
+        if let (Some(key), Some(value)) = (split_key_value.next(), split_key_value.next()) {
             //percent-decode both sides: the stats login form url-encodes the password, so a secret
             //containing a space, '+', '%' or a non-ASCII byte only matches once decoded here
-            form_data.insert(percent_decode(key),percent_decode(value));
+            form_data.insert(percent_decode(key), percent_decode(value));
         }
-    };
+    }
     form_data
 }
 
 ///`application/x-www-form-urlencoded` decoder: '+' is a literal space, `%XX` is a byte; a stray
 ///or invalid percent sign is kept verbatim rather than dropping the field.
-fn percent_decode(input : &str) -> String {
+fn percent_decode(input: &str) -> String {
     let bytes = input.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
         match bytes[i] {
-            b'+' => { out.push(b' '); i += 1; }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
             b'%' if i + 2 < bytes.len() => {
-                match u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16) {
-                    Ok(byte) => { out.push(byte); i += 3; }
-                    Err(_) => { out.push(b'%'); i += 1; }
+                match u8::from_str_radix(
+                    std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""),
+                    16,
+                ) {
+                    Ok(byte) => {
+                        out.push(byte);
+                        i += 3;
+                    }
+                    Err(_) => {
+                        out.push(b'%');
+                        i += 1;
+                    }
                 }
             }
-            b => { out.push(b); i += 1; }
+            b => {
+                out.push(b);
+                i += 1;
+            }
         }
     }
     //decoded bytes may split a UTF-8 sequence, so lossy keeps the value usable instead of failing
@@ -591,8 +634,14 @@ mod tests {
         //and a genuine `..` is rejected by the guard - both end in 404 without touching the fs
         let (path, _) = parse_raw_path("/%2F%2E%2E%2Fconfigs.toml");
         assert_eq!(path, "/%2F%2E%2E%2Fconfigs.toml");
-        assert!(crate::http::is_safe_asset_path(&path), "encoded dots are not a real .. component");
-        assert!(crate::http::get_index_file_content(&path).is_none(), "literal %2e%2e resolves to nothing");
+        assert!(
+            crate::http::is_safe_asset_path(&path),
+            "encoded dots are not a real .. component"
+        );
+        assert!(
+            crate::http::get_index_file_content(&path).is_none(),
+            "literal %2e%2e resolves to nothing"
+        );
         //a real traversal component is still refused
         let (path, _) = parse_raw_path("/locales/../../configs.toml");
         assert!(!crate::http::is_safe_asset_path(&path));
@@ -620,7 +669,10 @@ mod tests {
         junk.insert("X-Real-IP".to_string(), "not-an-ip\nEVIL".to_string());
         assert_eq!(trust_addr_proxy(&junk, "10.0.0.1", true), "10.0.0.1");
         let mut xff = CIHashMap::new();
-        xff.insert("X-Forwarded-For".to_string(), "203.0.113.42, 10.0.0.1".to_string());
+        xff.insert(
+            "X-Forwarded-For".to_string(),
+            "203.0.113.42, 10.0.0.1".to_string(),
+        );
         assert_eq!(trust_addr_proxy(&xff, "10.0.0.1", true), "203.0.113.42");
         assert_eq!(trust_addr_proxy(&xff, "10.0.0.1", false), "10.0.0.1");
     }
@@ -628,14 +680,23 @@ mod tests {
     #[test]
     fn body_limits_reject_before_reading() {
         let mut headers = CIHashMap::new();
-        headers.insert("Content-Length".to_string(), "99999999999999999999".to_string());
+        headers.insert(
+            "Content-Length".to_string(),
+            "99999999999999999999".to_string(),
+        );
         assert_eq!(check_body_limit(&headers), Some("400 Bad Request"));
         headers.insert("Content-Length".to_string(), u64::MAX.to_string());
         assert_eq!(check_body_limit(&headers), Some("413 Payload Too Large"));
         //telemetry/login forms only ever need kilobytes
         let mut form = CIHashMap::new();
-        form.insert("Content-Type".to_string(), "application/x-www-form-urlencoded".to_string());
-        form.insert("Content-Length".to_string(), (crate::config::MAX_FORM_BODY_BYTES + 1).to_string());
+        form.insert(
+            "Content-Type".to_string(),
+            "application/x-www-form-urlencoded".to_string(),
+        );
+        form.insert(
+            "Content-Length".to_string(),
+            (crate::config::MAX_FORM_BODY_BYTES + 1).to_string(),
+        );
         assert_eq!(check_body_limit(&form), Some("413 Payload Too Large"));
         //duplicate Content-Length headers collapse to `42, 42` and must not be read as 0
         let mut dup = CIHashMap::new();
@@ -666,13 +727,21 @@ mod tests {
         //the stats login form sends password=... percent-encoded; special characters in the secret
         //only match once decoded (regression: passwords with spaces/plus/percent never logged in)
         let decoded = parse_form_url_encoded(b"password=p%40ss%20w%2F100%25%20%2Bx");
-        assert_eq!(decoded.get("password").map(|s| s.as_str()), Some("p@ss w/100% +x"));
+        assert_eq!(
+            decoded.get("password").map(|s| s.as_str()),
+            Some("p@ss w/100% +x")
+        );
         //'+' is a space in the urlencoded alphabet
         let plus = parse_form_url_encoded(b"a=x+y&b=100%25");
         assert_eq!(plus.get("a").map(|s| s.as_str()), Some("x y"));
         assert_eq!(plus.get("b").map(|s| s.as_str()), Some("100%"));
         //a stray, invalid percent escape is preserved rather than dropping the whole field
-        assert_eq!(parse_form_url_encoded(b"k=100%%zz").get("k").map(|s| s.as_str()), Some("100%%zz"));
+        assert_eq!(
+            parse_form_url_encoded(b"k=100%%zz")
+                .get("k")
+                .map(|s| s.as_str()),
+            Some("100%%zz")
+        );
         assert_eq!(percent_decode("caf%C3%A9"), "café");
     }
 
@@ -683,7 +752,9 @@ mod tests {
     }
 
     fn count_occurrences(haystack: &[u8], needle: &[u8]) -> usize {
-        if needle.is_empty() || haystack.len() < needle.len() { return 0; }
+        if needle.is_empty() || haystack.len() < needle.len() {
+            return 0;
+        }
         let mut count = 0;
         let mut i = 0;
         while i + needle.len() <= haystack.len() {
@@ -718,7 +789,8 @@ mod tests {
         raw.extend_from_slice(b"GET /empty HTTP/1.1\r\n\r\n");
         let out = drive(raw).await;
         assert_eq!(
-            count_occurrences(&out, b"HTTP/1.1 200"), 2,
+            count_occurrences(&out, b"HTTP/1.1 200"),
+            2,
             "both the POST and the pipelined GET must be answered; the body must stop at Content-Length"
         );
     }
@@ -728,7 +800,9 @@ mod tests {
     #[tokio::test]
     async fn expect_100_continue_receives_interim_response() {
         let mut raw = Vec::new();
-        raw.extend_from_slice(b"POST /empty HTTP/1.1\r\nExpect: 100-continue\r\nContent-Length: 2048\r\n\r\n");
+        raw.extend_from_slice(
+            b"POST /empty HTTP/1.1\r\nExpect: 100-continue\r\nContent-Length: 2048\r\n\r\n",
+        );
         raw.extend_from_slice(&vec![b'x'; 2048]);
         let out = drive(raw).await;
         assert!(
@@ -747,7 +821,10 @@ mod tests {
     async fn truncated_status_line_closes_without_panicking() {
         let raw = b"GET HTTP/1.1\r\n\r\n".to_vec();
         let out = drive(raw).await;
-        assert!(out.is_empty(), "malformed request line must yield no response, got: {out:?}");
+        assert!(
+            out.is_empty(),
+            "malformed request line must yield no response, got: {out:?}"
+        );
     }
 
     ///the chunked reader must consume the framing exactly: five bytes as `5\r\nxxxxx\r\n0\r\n\r\n`
@@ -761,7 +838,8 @@ mod tests {
         raw.extend_from_slice(b"GET /empty HTTP/1.1\r\n\r\n");
         let out = drive(raw).await;
         assert_eq!(
-            count_occurrences(&out, b"HTTP/1.1 200"), 2,
+            count_occurrences(&out, b"HTTP/1.1 200"),
+            2,
             "chunked framing must end cleanly so the pipelined GET is still answered"
         );
     }
@@ -770,16 +848,20 @@ mod tests {
     async fn absurd_content_length_is_refused_before_reading() {
         let raw = b"POST /empty HTTP/1.1\r\nContent-Length: 18446744073709551615\r\n\r\n".to_vec();
         let out = drive(raw).await;
-        assert!(String::from_utf8_lossy(&out).contains("413 Payload Too Large"),
-            "an oversized declared body must be refused, got: {out:?}");
+        assert!(
+            String::from_utf8_lossy(&out).contains("413 Payload Too Large"),
+            "an oversized declared body must be refused, got: {out:?}"
+        );
     }
 
     #[tokio::test]
     async fn unparsable_content_length_is_refused() {
         let raw = b"POST /empty HTTP/1.1\r\nContent-Length: banana\r\n\r\n".to_vec();
         let out = drive(raw).await;
-        assert!(String::from_utf8_lossy(&out).contains("400 Bad Request"),
-            "a non-numeric Content-Length must not be silently read as zero, got: {out:?}");
+        assert!(
+            String::from_utf8_lossy(&out).contains("400 Bad Request"),
+            "a non-numeric Content-Length must not be silently read as zero, got: {out:?}"
+        );
     }
 
     #[tokio::test]
@@ -790,7 +872,9 @@ mod tests {
         let big = format!("{:x}\r\n", crate::config::MAX_CHUNKED_BODY_BYTES + 1024);
         raw.extend_from_slice(big.as_bytes());
         let out = drive(raw).await;
-        assert!(String::from_utf8_lossy(&out).contains("413"),
-            "chunked streams past the cap must be rejected, got: {out:?}");
+        assert!(
+            String::from_utf8_lossy(&out).contains("413"),
+            "chunked streams past the cap must be rejected, got: {out:?}"
+        );
     }
 }
